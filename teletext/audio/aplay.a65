@@ -1,0 +1,386 @@
+#define oswrch $ffee
+#define osbyte $fff4
+#define osfind $ffce
+#define osgbpb $ffd1
+
+	*= $e00
+	
+	.(
+	jsr openfile
+	jsr loadblock
+	jsr queueblock
+	jsr initptr
+	jsr initfreq
+	jsr inittimer1irq
+	jsr pollsound
+	rts
+	.)
+	
+handle
+	.byt 0
+
+openfile
+	.(
+	lda #$40
+	ldx #<filename
+	ldy #>filename
+	jsr osfind
+	sta handle
+	rts
+	.)
+
+filename
+	.asc "noisebits", 0
+
+gbpb_block
+gbpb_fh
+	.byt 0
+gbpb_io
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+gbpb_tfer
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+gbpb_seq
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+
+loadblock
+	.(
+	lda handle
+	sta gbpb_fh
+	lda #0
+	sta gbpb_io
+	lda #$3C
+	sta gbpb_io+1
+	lda #<4096
+	sta gbpb_tfer
+	lda #>4096
+	sta gbpb_tfer+1
+	lda #<0
+	sta gbpb_seq
+	lda #>0
+	sta gbpb_seq+1
+	lda #0/65536
+	sta gbpb_seq+2
+	ldx #<gbpb_block
+	ldy #>gbpb_block
+	lda #3
+	jsr osgbpb
+	rts
+	.)
+
+nextblock
+	.(
+	lda handle
+	sta gbpb_fh
+	lda #0
+	sta gbpb_io
+	lda $13
+	cmp #2
+	beq secondbuf
+	lda #$3C
+	jmp chosenbuf
+secondbuf
+	lda #$4C
+chosenbuf
+	sta gbpb_io+1
+	
+	; received request, clear.
+	stz $13
+	
+	lda #<4096
+	sta gbpb_tfer
+	lda #>4096
+	sta gbpb_tfer+1
+	ldx #<gbpb_block
+	ldy #>gbpb_block
+	lda #3
+	jsr osgbpb
+	rts
+	.)
+
+; Queue the block after the first.
+queueblock
+	.(
+	lda #2
+	sta $13
+	jsr nextblock
+	rts
+	.)
+
+pollsound
+	.(
+	lda #'S'
+	jsr oswrch
+repeat
+	lda $13
+	beq repeat
+	
+	lda $13
+	cmp #2
+	beq two
+	lda #65
+	jmp done
+two
+	lda #66
+done
+	jsr oswrch
+	
+	jsr nextblock
+	jmp repeat
+	
+	rts
+	.)
+
+; Initialise $11,$10 to point to sound data (first 4K buffer, at $3c00).
+; $12 tells which block is active (0/1).
+initptr
+	.(
+	lda #<$3C00
+	ldx #>$3C00
+	sta $10
+	stx $11
+	stz $12
+	stz $13
+	rts
+	.)
+
+#define SYS_T1C_L $fe44
+#define SYS_T1C_H $fe45
+#define SYS_T1L_L $fe46
+#define SYS_T1L_H $fe47
+#define SYS_T2C_L $fe48
+#define SYS_T2C_H $fe49
+#define SYS_SR $fe4a
+#define SYS_ACR $fe4b
+#define SYS_PCR $fe4c
+#define SYS_IFR $fe4d
+#define SYS_IER $fe4e
+
+#define USR_T1C_L $fe64
+#define USR_T1C_H $fe65
+#define USR_T1L_L $fe66
+#define USR_T1L_H $fe67
+#define USR_T2C_L $fe68
+#define USR_T2C_H $fe69
+#define USR_SR $fe6a
+#define USR_ACR $fe6b
+#define USR_PCR $fe6c
+#define USR_IFR $fe6d
+#define USR_IER $fe6e
+
+oldirq1v
+	.word 0
+
+inittimer1irq
+	.(
+	lda $204
+	ldx $205
+	sta oldirq1v
+	stx oldirq1v+1
+	
+	sei
+
+	; Continuous interrupts for timer 1.
+	lda USR_ACR
+	and #$3f
+	ora #$40
+	sta USR_ACR
+
+	; Point at irq handler.
+	lda #<irqhandler
+	ldx #>irqhandler
+	sta $204
+	stx $205
+
+	; Enable Usr timer 1 interrupt.
+	lda #$c0
+	sta USR_IER
+
+	; Timer1 latches, 1000000/125 = 8000Hz
+	lda #<125
+	ldx #>125
+	sta USR_T1C_L
+	stx USR_T1C_H
+
+	; Disable System VIA interrupts.
+	lda #$7f
+	sta SYS_IER
+	; Enable system timer 1 (only).
+	lda #$c0
+	sta SYS_IER
+
+	cli
+	
+	lda #'I'
+	jsr oswrch
+	
+	rts
+	.)
+
+soundstrobe
+	.(
+	sta $fe41
+	; strobe is supposed to be at least 8uS. This should do.
+	stz $fe40
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	lda #$08
+	sta $fe40
+	rts
+	.)
+
+; initialise sound frequencies on 3 channels.
+initfreq
+	.(
+	sei
+	
+	lda #$ff
+	sta $fe43
+	
+	; channel 3
+	lda #$80
+	jsr soundstrobe
+	lda #$00
+	jsr soundstrobe
+	
+	; channel 2
+	lda #$a0
+	jsr soundstrobe
+	lda #$00
+	jsr soundstrobe
+	
+	; channel 1
+	lda #$c0
+	jsr soundstrobe
+	lda #$00
+	jsr soundstrobe
+	
+	cli
+	rts
+	.)
+
+irqhandler
+	.(
+	lda $fc
+	pha
+
+	lda #$c0
+	bit USR_IFR
+	; top bit clear - not interrupt from 6522 (user VIA).
+	bpl exit
+	; bit 6 clear - not our interrupt, process next in chain.
+	bvc exit
+
+	; Clear timer1 interrupt flag.
+	lda USR_T1C_L
+	
+	; want Y too.
+	tya
+	pha
+	
+	; play sample!
+	
+	; set 'slow' databus lines to output (might not need to do this each
+	; cycle?)
+	;lda #$ff
+	;sta $fe43
+	
+	lda ($10)
+	
+	eor #$ff
+	
+	; linear sound!
+	;lsr
+	;lsr
+	;lsr
+	;lsr
+	;ora #$90
+
+	; cheap log sound!
+	;tay
+	;lda $3900, y
+
+	;sta $fe41
+	; set strobe low...
+	;stz $fe40
+
+	; channel volume tables at $3900, $3A00, $3B00
+
+	tay
+
+	; these jsrs waste a bit of time! Might want to inline.
+	lda $3900, y
+	jsr soundstrobe
+	lda $3a00, y
+	jsr soundstrobe
+	lda $3b00, y
+	jsr soundstrobe
+
+	; just for shits & giggles
+	lda #0
+	sta ($10)
+
+	; move to next sample / check for end-of-buffer.
+	inc $10
+	.(
+	bne nohi
+	lda $12
+	bne buftwo
+	inc $11
+	lda $11
+	cmp #$4c
+	bcc nohi
+	; switch to second buffer.
+	lda #1
+	sta $12
+	; request reload of buffer 1.
+	sta $13
+	stz $10
+	lda #$4c
+	sta $11
+	jmp nohi
+buftwo
+	inc $11
+	lda $11
+	cmp #$5c
+	bcc nohi
+	; switch to first buffer.
+	stz $12
+	; request reload of buffer 2.
+	lda #2
+	sta $13
+	stz $10
+	lda #$3c
+	sta $11
+nohi
+	.)
+
+	; set strobe high again (might not be enough cycles!).
+	;lda #$08
+	;sta $fe40
+	
+	; handled our interrupt, don't chain to next.
+	pla
+	tay
+	pla
+	sta $fc
+	rti
+
+exit
+	pla
+	sta $fc
+	jmp (oldirq1v)
+	.)

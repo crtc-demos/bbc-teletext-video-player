@@ -1,0 +1,1730 @@
+#define oswrch $ffee
+#define osbyte $fff4
+
+	*= $1904
+        
+        .(
+        lda #2
+        jsr setmode
+        jsr futzmodesize
+        jsr vduvars
+        jsr initvsync
+        jsr fillscreenup
+        jsr init_strip_updating
+        jsr control
+stop
+	; jmp stop
+        rts
+        .)
+
+; Set mode, mode number in A.
+setmode	.(
+	pha
+        lda #22
+        jsr oswrch
+        pla
+        jsr oswrch
+        rts
+        .)
+
+#define ADL_BIT(addr,bit) ((addr) | ((bit) << 3))
+
+; Make the hardware-scroll mode size 10k
+futzmodesize
+	.(
+        sei
+        lda #$0f
+        sta $fe42
+        lda #ADL_BIT(4, 1)
+        sta $fe40
+        lda #ADL_BIT(5, 1)
+        sta $fe40
+        cli
+        rts
+        .)
+
+; Set up screen 128x160 (wide) pixels
+vduvars
+	.(
+        ldx #3
+setvars
+        lda vars,x
+        sta $fe00
+        lda values,x
+        sta $fe01
+        dex
+        bpl setvars
+        rts
+        
+vars	.byte 1,  6,  2,  7
+values	.byte 64, 20, 90, 29
+        .)
+
+#define SYS_T1C_L $fe44
+#define SYS_T1C_H $fe45
+#define SYS_T1L_L $fe46
+#define SYS_T1L_H $fe47
+#define SYS_T2C_L $fe48
+#define SYS_T2C_H $fe49
+#define SYS_SR $fe4a
+#define SYS_ACR $fe4b
+#define SYS_PCR $fe4c
+#define SYS_IFR $fe4d
+#define SYS_IER $fe4e
+
+#define USR_T1C_L $fe64
+#define USR_T1C_H $fe65
+#define USR_T1L_L $fe66
+#define USR_T1L_H $fe67
+#define USR_T2C_L $fe68
+#define USR_T2C_H $fe69
+#define USR_SR $fe6a
+#define USR_ACR $fe6b
+#define USR_PCR $fe6c
+#define USR_IFR $fe6d
+#define USR_IER $fe6e
+
+oldirq1v
+	.word 0
+
+initvsync
+	.(
+        lda $204
+        ldx $205
+        sta oldirq1v
+        stx oldirq1v+1
+
+	sei
+
+        ; Set one-shot mode for timer 1
+        lda USR_ACR
+        and #$3f
+        sta USR_ACR
+        
+        ; Sys VIA CA1 interrupt on positive edge
+        lda SYS_PCR
+        ora #$1
+        sta SYS_PCR
+                
+        ; Point at timer1 handler
+        lda #<irq1
+        ldx #>irq1
+        sta $204
+        stx $205
+
+        ; Enable Usr timer 1 interrupt
+        lda #$c0
+        sta USR_IER
+        
+        ; Enable Sys CA1 interrupt.
+        lda #$82
+        sta SYS_IER
+        
+        cli
+        
+        ; Turn off ADC sampling (seems to affect timing too much)
+        ;lda #16
+        ;ldx #0
+        ;jsr osbyte
+        
+        rts
+	.)
+
+fliptime
+	.word 12256
+
+colour
+	.byte 4
+
+#define PALCONTROL $fe21
+
+irq1	.(
+        pha
+	; Is it a BRK or an IRQ? Groo, we must actually examine the stack to
+        ; find out.
+        txa
+        tsx
+        pha
+        lda $102,x
+        and #16
+        bne skip
+        ; Is it our System VIA CA1 interrupt?
+	lda #2
+        bit SYS_IFR
+        bne vsync
+        ; Is it our User VIA timer1 interrupt?
+        lda #64
+        bit USR_IFR
+        bne timer1
+        
+	jmp skip
+
+vsync
+        ; Trigger after 'fliptime' microseconds
+        lda fliptime
+        sta USR_T1C_L
+        lda fliptime+1
+        sta USR_T1C_H
+                
+        lda #(8*16)+3
+        jmp change
+
+timer1
+	; Clear interrupt
+	lda USR_T1C_L
+
+	lda #(8*16)+5
+change
+        ; Change BG to accumulator-colour.
+        sta PALCONTROL
+        ;ora #1*16
+        ;sta PALCONTROL
+        ;eor #(1^2)*16
+        ;sta PALCONTROL
+        ;eor #(2^3)*16
+        ;sta PALCONTROL
+        ;eor #(3^4)*16
+        ;sta PALCONTROL
+        ;eor #(4^5)*16
+        ;sta PALCONTROL
+        ;eor #(5^6)*16
+        ;sta PALCONTROL
+        ;eor #(6^7)*16
+        ;sta PALCONTROL
+        
+skip
+        pla
+        tax
+        pla
+        jmp (oldirq1v)
+	.)
+
+fillscreenup
+	.(
+        ldx #>$5800
+        lda #<$5800
+        ldy #0
+        sta $70
+outer
+        stx $71
+inner
+	tya
+        and #$3f
+	sta ($70),y
+        iny
+        bne inner
+        inx
+        ; $80
+        cpx #$66
+        bne outer
+        
+        rts
+        .)
+
+screen_xpos .word 0
+screen_ypos .word 0
+old_xpos .word 0
+old_ypos .word 0
+
+; Where the current strip starts in the buffer (in columns, e.g. 0-67)
+#define strip_origin   $20
+; Current lhs, rhs positions at which to write tiles
+#define lhs_cursor     $21
+#define rhs_cursor     $23
+; Edge tiles to update
+#define lhs_target     $25
+#define rhs_target     $27
+; Top buffers (two pointers)
+#define buffer_top     $29
+; Bottom buffers (two pointers)
+#define buffer_bottom  $2d
+; Active buffer
+#define updating_strip $31
+; Current screen top-left origin address
+#define screen_origin  $32
+
+#define DOWN 41
+#define UP 57
+#define LEFT 25
+#define RIGHT 121
+
+; input X = key to test
+; output N flag set = key pressed
+testkey
+	lda #121
+        jsr osbyte
+        cpx #0
+        rts
+
+control
+	.(
+readkbd
+	; Remember old display position
+	lda screen_xpos
+        sta old_xpos
+        lda screen_xpos+1
+        sta old_xpos+1
+        
+        lda screen_ypos
+        sta old_ypos
+        lda screen_ypos+1
+        sta old_ypos+1
+
+	; Look for key presses
+        ldx #DOWN ^ $80
+        jsr testkey
+        bpl not_down
+
+	inc screen_ypos
+        .(
+        bne skip_hi
+        inc screen_ypos+1
+skip_hi	.)
+
+not_down
+        ldx #UP ^ $80
+        jsr testkey
+        bpl not_up
+
+        ldx screen_ypos
+        dex
+        stx screen_ypos
+        cpx #255
+        .(
+        bne skip_hi
+        dec screen_ypos+1
+        bpl skip_hi
+        lda #0
+        sta screen_ypos
+        sta screen_ypos+1
+skip_hi	.)
+
+not_up
+        ldx #LEFT ^ $80
+        jsr testkey
+        bpl not_left
+
+        ldx screen_xpos
+        dex
+        stx screen_xpos
+        cpx #255
+        .(
+        bne skip_hi
+        dec screen_xpos+1
+        bpl skip_hi
+        lda #0
+        sta screen_xpos
+        sta screen_xpos+1
+skip_hi	.)
+
+not_left
+	ldx #RIGHT ^ $80
+        jsr testkey
+        bpl not_right
+
+	inc screen_xpos
+        .(
+        bne skip_hi
+        inc screen_xpos+1
+skip_hi	.)
+
+not_right
+	lda #19
+        jsr osbyte
+        
+        ; Y total adjust
+        lda #5
+        sta $fe00
+        lda screen_ypos
+        and #$7
+        eor #$7
+        ;asl
+        sta $fe01
+        
+        ; Make $02,$01,$00 xpos*8
+        lda screen_xpos
+        sta $00
+        lda screen_xpos+1
+        sta $01
+
+	lda #0
+	asl $00
+        rol $01
+        rol
+        asl $00
+        rol $01
+        rol
+        asl $00
+        rol $01
+        rol
+        sta $02
+                
+        ; Make $04,$03,A (ypos/8)*512
+        ; Equiv. (ypos >> 3) << 9
+        ; Or (ypos & ~7) << 6
+        ; Or [(ypos & ~7),8b'0] >> 2
+        lda screen_ypos
+        and #$f8
+        sta $03
+        lda screen_ypos+1
+        sta $04
+        lda #0
+        lsr $04
+        ror $03
+        ror
+        lsr $04
+        ror $03
+        ror
+        ; Add $04,$03,A to $02,$01,$01
+        clc
+        adc $00
+        sta $00
+        lda $01
+        adc $03
+        sta $01
+        lda $02
+        adc $04
+        sta $02
+        ; Screen index now in $02,$01,$00
+
+        jsr movescreen
+        
+        lda $00
+        sta screen_origin
+        lda $01
+        sta screen_origin+1
+        
+        ; Redraw RHS
+        ; new X pos > old X pos
+        .(
+        lda old_xpos
+        cmp screen_xpos
+        lda old_xpos+1
+        sbc screen_xpos+1
+        bcs skip
+        
+        lda $00
+        clc
+        adc #248
+        sta $02
+        lda $01
+        adc #1
+        cmp #$80
+        bcc noov
+        ;clc
+        adc #$d7
+noov
+        sta $03
+        
+        lda screen_xpos
+        clc
+        adc #63
+        sta $04
+        lda screen_xpos+1
+        adc #0
+        sta $05
+
+        lda screen_ypos+1
+        sta $07
+        lda screen_ypos
+	lsr $07
+        ror
+        lsr $07
+        ror
+        lsr $07
+        ror
+        sta $06
+        
+        ; rows to plot
+        lda #20
+        sta $0c
+        
+        jsr plotv
+        
+skip	.)
+        
+        ; Redraw LHS
+        ; New X pos < old X pos
+        .(
+        lda screen_xpos
+        cmp old_xpos
+        lda screen_xpos+1
+        sbc old_xpos+1
+        bcs skip
+        
+        lda screen_origin
+        sta $02
+        lda screen_origin+1
+        cmp #$80
+        bcc noov
+        adc #$d7
+noov
+        sta $03
+        
+        lda screen_xpos
+        sta $04
+        lda screen_xpos+1
+        sta $05
+        
+        lda screen_ypos+1
+        sta $07
+        lda screen_ypos
+        lsr $07
+        ror
+        lsr $07
+        ror
+        lsr $07
+        ror
+        sta $06
+        
+        ; rows to plot
+        lda #20
+        sta $0c
+        
+        jsr plotv
+        
+skip	.)
+
+        ; Redraw top
+        .(
+        lda screen_ypos
+        cmp old_ypos
+        lda screen_ypos+1
+        sbc old_ypos+1
+        bcs skip
+        lda screen_origin
+        sta $00
+        lda screen_origin+1
+        sta $01
+        lda #0
+        sta $02
+        jsr plot_row
+skip	.)
+
+	; Redraw bottom
+        .(
+        lda old_ypos
+        cmp screen_ypos
+        lda old_ypos+1
+        sbc screen_ypos+1
+        bcs skip
+        lda screen_origin
+        sta $00
+        lda screen_origin+1
+        sta $01
+        lda #1
+        sta $02
+        jsr plot_row
+skip	.)
+
+	; Update incremental offscreen buffers
+	lda screen_xpos
+        sta $00
+        lda screen_xpos+1
+        sta $01
+        lda old_xpos
+        sta $02
+        lda old_xpos+1
+        sta $03
+	jsr update_bounds
+        
+        lda screen_ypos+1
+        sta $07
+        lda screen_ypos
+        lsr $07
+        ror
+        lsr $07
+        ror
+        lsr $07
+        ror
+        sta $06
+        jsr ploth_incremental
+        
+        ; see if offscreen buffers need to be flipped
+        .(
+        lda old_ypos
+        and #$f8
+        sta $06
+        lda screen_ypos
+        and #$f8
+        cmp $06
+        beq noflip
+        
+        ; Set cursors to centre,centre+1 of current row
+        lda lhs_target
+        clc
+        adc rhs_target
+        tax
+        lda lhs_target+1
+        adc rhs_target+1
+        sta lhs_cursor+1
+        txa
+        lsr lhs_cursor+1
+        ror
+        sta lhs_cursor
+        clc
+        adc #1
+        sta rhs_cursor
+        lda lhs_cursor+1
+        adc #0
+        sta rhs_cursor+1
+        
+        lda updating_strip
+        eor #2
+        sta updating_strip
+        
+noflip	.)
+        
+        jmp readkbd
+
+        rts
+        .)
+
+; Make index into level data given X, Y map coordinates.
+;    $05,$04  X coord in map
+;    $07,$06  Y coord in map
+; outputs:
+;    $09,$08  pointer to tile
+; clobbers:
+;    $0b,$0a
+makelevptr
+	; $09,$08 = Y*64
+	lda $06
+        sta $09
+        lda #0
+        lsr $09
+        ror
+        lsr $09
+        ror
+        lsr $09
+        ror
+        and #$c0
+        sta $08
+        
+        ; $0b,$0a = X>>2
+        lda $05
+        sta $0b
+        lda $04
+        lsr $0b
+        ror
+        lsr $0b
+        ror
+        sta $0a
+        
+        ; $09,$08 = index into level data
+        lda $08
+        clc
+        adc $0a
+        sta $08
+        lda $09
+        adc $0b
+        sta $09
+
+        lda $08
+        clc
+        adc #<levdata
+        sta $08
+        lda $09
+        adc #>levdata
+        sta $09
+
+	rts
+
+; Plot a vertical column of bytes
+;   $03,$02  screen address of top byte of column
+;   $05,$04  X ordinate of top of column in map (tiles take 4 places)
+;   $07,$06  Y ordinate of top of column in map (tiles take 2 places)
+;   $0c      number of rows to plot
+; $00-$0f corrupted.
+plotv	.(
+        jsr makelevptr
+	; $09,$08 = pointer to tile in map
+
+	lda $04
+        and #3
+        asl
+        asl
+        asl
+        clc
+        adc #<tiles
+        sta $0a
+        lda #0
+        adc #>tiles
+        sta $0b
+        ; $0b,$0a is adjusted base for tiles
+
+	.(
+        ldx $0c
+rowloop
+        ldy #0
+        lda ($08),y
+        sta $0f
+        lda #0
+        lsr $0f
+        ror
+        lsr $0f
+        ror
+        sta $0e
+        
+        ; $0f,$0e is index into tile data
+        lda $0e
+        clc
+        adc $0a
+        sta $0c
+        lda $0f
+        adc $0b
+        sta $0d
+        ; $0d,$0c is top row for this tile (adjusted for X offset)
+        
+        .(
+        lda $06
+        and #1
+        bne nextrow
+        lda $0c
+        clc
+        adc #32
+        sta $0c
+        bcc done
+        inc $0d
+        jmp done
+nextrow
+	; add row size in map
+	lda $08
+        clc
+        adc #64
+        sta $08
+        bcc done
+        inc $09
+done	.)
+        
+        lda $0c
+        sta $00
+        lda $0d
+        sta $01
+        jsr plot8
+        
+        ; Next row on screen
+        lda $03
+        clc
+        adc #2
+        .(
+        cmp #$80
+        bcc noincr
+        ;clc (C must be set)
+        adc #$d7
+noincr	.)
+        sta $03
+        
+        ; alternate low bit of row
+        lda $06
+        eor #1
+        sta $06
+        
+        dex
+        bne rowloop
+	.)
+        
+	rts
+        .)
+
+; We should maintain:
+;   - A complete strip containing pixel rows to copy into top of screen (A)
+;   - A complete strip containing pixel rows to copy into bottom of screen (B)
+;   - A partially-plotted row beyond the top row (C)
+;   - A partially-plotted row beyond the bottom row (D)
+; A and C, B and D constitute double buffers, swapped over after 8 pixels
+; (i.e. pointers to them are swapped).
+; If we plot partial rows from the middle outwards, and each buffered row is
+; one tile wider than the screen, we can possibly avoid wasted work, and we
+; avoid needing to plot partial tiles. We should keep LHS, RHS pointers for
+; plotted tiles, and update as necessary.
+; Sideways scrolling must update all four buffers (C & D only lazily).
+
+; Plot a horizontal row of tiles
+;   $03,$02  screen address of top byte of row
+;   $05,$04  X ordinate of top of row in map (tiles take 4 places)
+;   $07,$06  Y ordinate of top of row in map (tiles take 2 places)
+ploth	.(
+	jsr makelevptr
+        ; $09,$08 = pointer to tile in map
+
+	; write 16 tiles
+	lda #16
+        sta $0c        
+
+	; Make $0e,$0d proper tile source row
+	.(
+	lda $06
+        and #1
+        beq firstrow
+        lda #<tiles
+        clc
+        adc #32
+        sta $0d
+        lda #>tiles
+        adc #0
+        sta $0e
+        jmp done
+firstrow
+	lda #<tiles
+        sta $0d
+        lda #>tiles
+        sta $0e
+done
+	.)
+
+        lda $04
+        and #3
+        beq fulltiles
+
+	tax
+
+	asl
+        asl
+        asl
+        clc
+        adc $0d
+        sta $0a
+        lda #0
+        adc $0e
+        sta $0b
+        
+        ldy #0
+        lda ($08),y
+        sta $01
+        lda #0
+        lsr $01
+        ror
+        lsr $01
+        ror
+        
+        ; C must be zero
+        adc $0a
+        sta $00
+        lda $01
+        adc $0b
+        sta $01
+        ; $01,$00 is pixel data
+        
+        lda $0c
+        
+        ; 1 -> 3
+        ; 2 -> 2
+        ; 3 -> 1
+        dex
+        txa
+        eor #3
+        tax
+        
+        .(
+partial
+	jsr plot8
+        lda $00
+        clc
+        adc #8
+        sta $00
+        .(
+        bcc skiphi
+        inc $01
+skiphi	.)
+        
+        dex
+        bne partial
+        .)
+        
+        ; Next tile data
+        inc $08
+        .(
+        bne skiphi
+        inc $09
+skiphi	.)
+
+	; write 14 tiles
+	lda #14
+        sta $0c
+        
+fulltiles
+        .(
+	lda $03
+        cmp #$80
+        bcc noov
+        adc $d7
+        sta $03
+noov	.)
+
+	ldy #0
+        lda ($08),y
+        sta $01
+        lda #0
+        lsr $01
+        ror
+        lsr $01
+        ror
+        adc $0d
+        sta $00
+        lda $01
+        adc $0e
+        sta $01
+        
+        jsr plot32
+        
+        ; Next screen position
+        lda $02
+        clc
+        adc #32
+        sta $02
+        .(
+        bcc skiphi
+        inc $03
+skiphi	.)
+
+        ; Next tile data
+        inc $08
+        .(
+        bne skiphi
+        inc $09
+skiphi	.)
+        
+        dec $0c
+        bne fulltiles
+        
+        .(
+        lda $04
+        and #3
+        beq done
+        
+        tax
+        
+        .(
+	lda $03
+        cmp #$80
+        bcc noov
+        adc $d7
+        sta $03
+noov	.)
+	; $03,$02 is screen ptr for the end bit
+        
+        ldy #0
+        lda ($08),y
+        sta $01
+        lda #0
+        lsr $01
+        ror
+        lsr $01
+        ror
+        
+        ; C must be zero
+        adc $0a
+        sta $00
+        lda $01
+        adc $0b
+        sta $01
+        ; $01,$00 is pixel data
+        
+        .(
+partial
+	jsr plot8
+        lda $00
+        clc
+        adc #8
+        sta $00
+        .(
+        bcc skiphi
+        inc $01
+skiphi	.)
+
+	dex
+        bne partial
+        .)
+        
+done	.)
+        
+        rts
+        .)
+
+init_strip_updating
+	lda #0
+        sta strip_origin
+        sta lhs_cursor+1
+        sta rhs_cursor+1
+        sta lhs_target+1
+        sta rhs_target+1
+        lda #7
+        sta lhs_cursor
+        lda #8
+        sta rhs_cursor
+        lda #0
+        sta lhs_target
+        lda #16
+        sta rhs_target
+        lda #<$55e0
+        sta buffer_top
+        lda #>$55e0
+        sta buffer_top+1
+        lda #<$53c0
+        sta buffer_top+2
+        lda #>$53c0
+        sta buffer_top+3
+        lda #<$51a0
+        sta buffer_bottom
+        lda #>$51a0
+        sta buffer_bottom+1
+        lda #<$4f80
+        sta buffer_bottom+2
+        lda #>$4f80
+        sta buffer_bottom+3
+        lda #0
+        sta updating_strip
+	rts
+
+; Update bounds. Should not be called if difference between previous & current
+; X ordinates is too large.
+;   $01,$00  X ordinate
+;   $03,$02  Previous X ordinate
+; Clobbered:
+;   $04
+update_bounds
+	lda $00
+        sec
+        sbc $02
+        
+        ; Acc is the X column-difference this frame. Add to strip origin.
+        clc
+        adc strip_origin
+        sta strip_origin
+        
+        ; Make sure strip_origin remains in range 0..67.
+        .(
+        eor $80
+        cmp #(0 ^ $80)
+        bcs ge
+        ; clc
+        lda strip_origin
+        adc #68
+        sta strip_origin
+ge	.)
+
+	.(
+        lda strip_origin
+        cmp #68
+        bcc lt
+        ; sec
+        sbc #68
+lt	.)
+        sta strip_origin
+        
+        ; Calculate new target LHS, RHS using new X ordinate.
+        lda $01
+        sta lhs_target+1
+        lda $00
+        lsr lhs_target+1
+        ror
+        lsr lhs_target+1
+        ror
+        sta lhs_target
+        
+        clc
+        adc #16
+        sta rhs_target
+        lda lhs_target+1
+        adc #0
+        sta rhs_target+1
+        
+	rts
+
+; Inputs
+;    $07      -- (low bit only) even/odd vertical tile
+;    $09,$08  -- pointer to top tile in map
+;    $10,$0f  -- byte-index into off-screen buffers
+;    $14,$13,$12,$11  -- pair of buffer pointers
+; Clobbers
+;    $09,$08,$03,$02,$01,$00
+plot_tile
+        ldy #0
+        lda ($08),y
+        
+        ; Plot first row
+        sta $01
+        lda #0
+        lsr $01
+        ror
+        lsr $01
+        ror
+        clc
+        adc #<tiles
+        sta $00
+        lda $01
+        adc #>tiles
+        sta $01
+        ; $01, $00 are pointer to tile data.
+        
+        ; Fix the right source position for tile.
+        .(
+        lda $07
+        and #1
+        beq firstrow
+        lda $00
+        clc
+        adc #32
+        sta $00
+        bcc firstrow
+        inc $01
+firstrow
+	.)
+        
+        ldx updating_strip
+        lda $11,x
+        clc
+        adc $0f
+        sta $02
+        lda $12,x
+        adc $10
+        sta $03
+        
+        jmp plot32
+
+
+; One horizontal incremental-update step.
+; Tiles are plotted to (roughly):
+;   buffer_top[updating_strip][(strip_origin/4+(lhs_cursor-lhs_target))%17]
+;   buffer_bottom[ " " ][ " " ]
+; Inputs
+;    $07,$06  Y coord in map
+;    (+ cursors, targets)
+; Clobbers
+;    $00-$10
+ploth_incremental
+	.(
+        ; Squirrel away $07,$06. We don't want to clobber them permanently.
+        lda $06
+        sta $0d
+        lda $07
+        sta $0e
+        ; $0e,$0d are a copy of the top Y map ordinate.
+
+	lda strip_origin
+        lsr
+        lsr
+        
+        ; $0c is strip_origin/4
+        sta $0c
+        
+        ; synthesize signed comparison, $10 is scratch
+        lda lhs_target+1
+        eor #$80
+        sta $10
+        
+        lda lhs_cursor
+        cmp lhs_target
+        lda lhs_cursor+1
+        eor #$80
+        sbc $10
+        ; Out of range!
+        .(
+        bcs no_skip_lhs
+        jmp skip_lhs
+no_skip_lhs
+	.)
+
+	lda $0c        
+        clc
+        adc lhs_cursor
+        sec
+        sbc lhs_target
+        .(
+        ; signed comparison!
+        eor #$80
+        cmp #(0 ^ $80)
+        bcs ge
+        ; clc
+        eor #$80
+        adc #68
+ge	.)
+
+	.(
+retry
+        cmp #17
+        bcc lt
+        ; sec
+        sbc #17
+        ; retry shouldn't be necessary...
+        jmp retry
+lt	.)
+
+	; $10,$0f is bounds-adjusted index to write LHS tile to (bytes)
+        ; Multiply accumulator by 32 (==Acc*256/8)
+	sta $10
+        lda #0
+        lsr $10
+        ror
+        lsr $10
+        ror
+        lsr $10
+        ror
+        sta $0f
+        
+        ; Load LHS cursor position (*4) for makelevptr.
+        lda lhs_cursor
+        sta $04
+        lda lhs_cursor+1
+	asl $04
+        rol
+        asl $04
+        rol
+        sta $05
+                
+        ; One row before screen top.
+        lda $0d
+        sec
+        sbc #1
+        sta $06
+        lda $0e
+        sbc #0
+        sta $07
+        
+        jsr makelevptr
+        ; $09,$08 is a pointer to the updating tile.
+        
+        lda buffer_top
+        sta $11
+        lda buffer_top+1
+        sta $12
+        lda buffer_top+2
+        sta $13
+        lda buffer_top+3
+        sta $14
+
+        jsr plot_tile
+
+	; Add a screenful of map tiles to $09,$08
+	; FIXME is 10 rows of tiles right?
+	lda $08
+        clc
+        adc #<(64*10)
+        sta $08
+        lda $09
+        adc #>(64*10)
+        sta $09
+        
+        ; Flip low-bit of $07
+        inc $07
+
+        lda buffer_bottom
+        sta $11
+        lda buffer_bottom+1
+        sta $12
+        lda buffer_bottom+2
+        sta $13
+        lda buffer_bottom+3
+        sta $14
+
+	jsr plot_tile
+        
+        lda lhs_cursor
+        sec
+        sbc #1
+        sta lhs_cursor
+        lda lhs_cursor+1
+        sbc #0
+        sta lhs_cursor+1
+        
+skip_lhs
+        lda rhs_target
+        cmp rhs_cursor
+        lda rhs_target+1
+        sbc rhs_cursor+1
+        .(
+        ; bcs no_skip_rhs
+        ; Always skip RHS
+        jmp skip_rhs
+no_skip_rhs
+	.)
+        
+        lda $0c
+        clc
+        adc #17
+        clc
+        adc rhs_cursor
+        sec
+        sbc rhs_target
+        .(
+        ; signed comparison!
+        eor #$80
+        cmp #(0 ^ $80)
+        bcs ge
+        ; clc
+        eor #$80
+        adc #68
+ge	.)
+
+	.(
+retry
+        cmp #17
+        bcc lt
+        ; sec
+        sbc #17
+        ; retry shouldn't really be necessary
+        jmp retry
+lt	.)
+
+	; $03,$02 is index to write RHS tile to (bytes)
+        sta $10
+        lda #0
+        lsr $10
+        ror
+        lsr $10
+        ror
+        lsr $10
+        ror
+        sta $0f
+        
+        ; Load RHS cursor position (*4) for makelevptr.
+        lda rhs_cursor
+        sta $04
+        lda rhs_cursor+1
+        asl $04
+        rol
+        asl $04
+        rol
+        sta $05
+        
+        ; One row before screen top
+        lda $0d
+        sec
+        sbc #1
+        sta $06
+        lda $0e
+        sbc #0
+        sta $07
+        
+        jsr makelevptr
+        ; $09,$08 is ptr to tile in map.
+        
+        lda buffer_top
+        sta $11
+        lda buffer_top+1
+        sta $12
+        lda buffer_top+2
+        sta $13
+        lda buffer_top+3
+        sta $14
+        
+        jsr plot_tile
+        
+        lda $08
+        clc
+        adc #<(64*10)
+        sta $08
+        lda $09
+        adc #>(64*10)
+        sta $09
+        
+        ; Flip low-order bit of $07
+        inc $07
+        
+        lda buffer_bottom
+        sta $11
+        lda buffer_bottom+1
+        sta $12
+        lda buffer_bottom+2
+        sta $13
+        lda buffer_bottom+3
+        sta $14
+        
+        jsr plot_tile
+        
+        .(
+        inc rhs_cursor
+        bne skip_hi
+        inc rhs_cursor+1
+skip_hi	.)
+
+skip_rhs
+	; restore $06,$07
+	lda $0d
+        sta $06
+        lda $0e
+        sta $07
+	rts
+        .)
+
+; Plot a horizontal strip of pixels from a back buffer
+; Input
+;    $01,$00  screen top-left address
+;    $02      update top (=0) or bottom (=1)
+plot_row
+	.(
+        lda strip_origin
+        sta $04
+        lda #0
+        asl $04
+        rol
+        asl $04
+        rol
+        asl $04
+        rol
+        sta $05
+        ; $05,$04 is strip_origin*8
+        
+        lda #68
+        sec
+        sbc strip_origin
+        sta $06
+        ; $06 is number of columns before buffer must wrap around.
+        
+	lda updating_strip
+        eor #2
+        tax
+        
+        .(
+        ror $02
+        bcs do_bottom
+        
+        lda buffer_top,x
+        clc
+        adc $04
+        sta $02
+        lda buffer_top+1,x
+        adc $05
+        sta $03
+        jmp done
+
+do_bottom
+	lda buffer_bottom,x
+        clc
+        adc $04
+        sta $02
+        lda buffer_bottom+1,x
+        adc $05
+        sta $03
+
+	; Get to the bottom of the screen, and make sure we don't overrun.
+	lda $00
+        clc
+        adc #<9728
+        sta $00
+        lda $01
+        adc #>9728
+        .(
+        cmp #$80
+        bcc nowrap
+        adc #$d7
+nowrap	.)
+        sta $01
+        
+done    .)
+        
+        lda screen_ypos
+        and #7
+        tay
+        .(
+	ldx #64
+loop
+	lda ($02),y
+        sta ($00),y
+        
+        lda $00
+        clc
+        adc #8
+        sta $00
+        .(
+        bcc skiphi
+        inc $01
+        lda $01
+        cmp #$80
+        bcc skiphi
+        adc #$d7
+        sta $01
+skiphi	.)
+        
+        lda $02
+        clc
+        adc #8
+        sta $02
+        .(
+        bcc skiphi
+        inc $03
+skiphi	.)
+
+	.(
+	dec $06
+        bne nowrapsrc
+        lda $02
+        sec
+        sbc #<(68*8)
+        sta $02
+        lda $03
+        sbc #>(68*8)
+        sta $03
+nowrapsrc
+	.)
+        
+        dex
+        bne loop
+        .)
+        
+        rts
+        .)
+
+
+; Plot 8 bytes from
+; ($00),y to $(02),y
+plot8
+	.(
+        ldy #0
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        rts
+        .)
+
+; Plot 32 bytes from
+; ($00),y to $(02),y
+plot32
+	.(
+        ldy #0
+        ldx #3
+loop
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        lda ($00),y
+        sta ($02),y
+        iny
+        dex
+        bpl loop
+        rts
+        .)
+
+#include "tiles.a65"
+
+	; Move screen according to index held in $02,$01,$00.
+        ; Uses zp locations $03-$0a inclusive.
+        ; Returns wrapped screen address in $01,$00.
+        ; A+X+Y are corrupted.
+movescreen
+        ; Now, we need to find index % 10240.
+        ;   1. i = index >> 3
+        ;   2. ild = index >> 8
+        ;   2. div = (i * 0x3333) >> 16
+        ;   3. mod = ild - ((div * 5) << 8)
+        ;   4. if mod >= 1280 then mod -= 1280
+        ; The division result isn't very accurate, but this is fixed up
+        ; by step 4. This produces the right results for 0 <= i < 2^24.
+
+	; Divide index by 8
+	lda $00
+	lsr $02
+        ror $01
+        ror
+        lsr $02
+        ror $01
+        ror
+        lsr $02
+        ror $01
+        ror
+        sta $00
+                
+        ; $05,$04,$03 is i*2
+        
+        lda $01
+        asl
+        sta $03
+        lda $02
+        rol
+        sta $04
+        lda #0
+        rol
+        sta $05
+        
+        ; $05,$04,$03 += 8b'0,$02,$01
+        
+        lda $03
+        clc
+        adc $01
+        sta $03
+        lda $04
+        adc $02
+        sta $04
+        .(
+        bcc noinchi
+        inc $05
+noinchi	.)
+        
+	;   8b'0,$05,$04,$03 is i*0x0003
+        ; + $05,$04,$03,8b'0 is i*0x0300
+        ;        X   Y  $03
+        ; = $06,$05,$04,$03
+        
+        lda $04
+        clc
+        adc $03
+        tay
+        
+        lda $05
+        adc $04
+        sty $04
+        tax
+        
+        lda #0
+        adc $05
+        stx $05
+        sta $06
+        
+        ; $0a,$09,$08,$07 = $06,$05,$04,$03 << 4
+        
+        lda $03
+        sta $07
+        ;lda $04
+        ;sta $08
+        sty $08
+        ;lda $05
+        ;sta $09
+        stx $09
+        lda $06
+        
+        .(
+        ldx #4
+sixteen
+        asl $07
+        rol $08
+        rol $09
+        rol
+        dex
+        bne sixteen
+        sta $0a
+        .)
+        
+        ;   $0a,$09,$08,$07 is i*0x3030
+        ; + $06,$05,$04,$03 is i*0x0303
+        ; = $06,$05 (,$04,$03) (i*0x3333)
+        
+        lda $03
+        clc
+        adc $07
+        ;sta $03
+        lda $04
+        adc $08
+        ;sta $04
+        lda $05
+        adc $09
+        sta $05
+        ;lda $06
+        ;adc $0a
+        ;sta $06
+        
+        ; $06,$05 is div (>> 16)
+        
+        lda $05
+        sta $03
+        ;lda $06
+        asl $03
+        ;rol
+        asl $03
+        ;rol
+        ;sta $04
+        
+        ; $04,$03 is div*4
+        
+        lda $05
+        clc
+        adc $03
+        sta $05
+        ;lda $06
+        ;adc $04
+        ;sta $06
+        
+        ; $06,$05 is div*5
+        ; $06,$05,8b'0 is div*1280
+                
+        ; Do $02,$01,$00 -= div*1280
+        
+        lda $01
+        sec
+        sbc $05
+        sta $01
+        ;lda $02
+        ;sbc $06
+        ;sta $02
+        
+        ; if >= 1280, subtract 1280.
+        .(
+again
+        lda $01
+        cmp #5
+        bcc lt_hi
+        sec
+        sbc #5
+        sta $01
+        ; jmp again
+lt_hi	.)
+
+no_wrap
+
+	; Add screen start.
+	lda $01
+        clc
+        adc #$b
+        sta $01
+
+        ; screen start lo
+        lda #13
+        sta $fe00
+        lda $00
+        sta $fe01
+
+        ; screen start hi
+        lda #12
+        sta $fe00
+        lda $01
+        sta $fe01
+
+	; Multiply address by 8 before returning
+	lda $01
+        asl $00
+        rol
+        asl $00
+        rol
+        asl $00
+        rol
+        sta $01
+        
+	rts

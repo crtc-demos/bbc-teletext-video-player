@@ -1,0 +1,358 @@
+#define oswrch $ffee
+#define osbyte $fff4
+#define osfind $ffce
+#define osgbpb $ffd1
+
+	*= $e00
+	
+	.(
+	jsr openfile
+	jsr loadblock
+	jsr initptr
+rept
+	jsr render
+
+	lda #19
+	jsr osbyte
+	lda #19
+	jsr osbyte
+
+	jmp rept
+
+	rts
+	.)
+
+handle
+	.byt 0
+
+openfile
+	.(
+	lda #$40
+	ldx #<filename
+	ldy #>filename
+	jsr osfind
+	sta handle
+	rts
+	.)
+
+filename
+	.asc "telesqz", 0
+
+gbpb_block
+gbpb_fh
+	.byt 0
+gbpb_io
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+gbpb_tfer
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+gbpb_seq
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+
+loadblock
+	.(
+	lda handle
+	sta gbpb_fh
+	lda #0
+	sta gbpb_io
+	lda #$5C
+	sta gbpb_io+1
+	lda #<4096
+	sta gbpb_tfer
+	lda #>4096
+	sta gbpb_tfer+1
+	lda #<0
+	sta gbpb_seq
+	lda #>0
+	sta gbpb_seq+1
+	lda #0/65536
+	sta gbpb_seq+2
+	ldx #<gbpb_block
+	ldy #>gbpb_block
+	lda #3
+	jsr osgbpb
+	rts
+	.)
+
+nextblock
+	.(
+	lda handle
+	sta gbpb_fh
+	lda #0
+	sta gbpb_io
+	lda #$5C
+	sta gbpb_io+1
+	lda #<4096
+	sta gbpb_tfer
+	lda #>4096
+	sta gbpb_tfer+1
+	ldx #<gbpb_block
+	ldy #>gbpb_block
+	lda #3
+	jsr osgbpb
+	rts
+	.)
+
+initptr
+	.(
+	lda #0
+	ldx #$5C
+	sta $00
+	stx $01
+	rts
+	.)
+
+render
+	.(
+	lda ($00)
+	cmp #127
+	.(
+	bne notnew
+	jmp newblock
+notnew	.)
+	cmp #255
+	.(
+	bne notraw
+	jmp rawframe
+notraw	.)
+	bit #$80
+	bne diffframe
+		
+rleframe
+	sta $06
+	
+	;lda #'R'
+	;jsr oswrch
+	
+	; skip over frame type byte.
+	inc $00
+	.(
+	bne nohi
+	inc $01
+nohi	.)
+	
+	.(
+do_spans
+	lda $06
+	beq spans_done
+	dec $06
+	
+	; a run-length encoded frame.
+	lda ($00)
+	sta $02
+	ldy #1
+	lda ($00), y
+	sta $03
+	iny
+	lda ($00), y
+	tax
+	; now ($02) is the span start, X is the (uncompressed) length.
+	lda $00
+	clc
+	adc #3
+	sta $00
+	.(
+	bcc nohi
+	inc $01
+nohi	.)
+	
+	lda #0
+	sta $05
+rlespans
+	ldy $05
+	; get repeat count
+	lda ($00), y
+	; stow repeat count in $04
+	sta $04
+	iny
+	; get byte to write
+	lda ($00), y
+	iny
+	; store Y index in $05
+	sty $05
+
+	; now A has byte to write, $04 has repeat count (where 0 means 256).
+	ldy $04
+	.(
+fill
+	dey
+	sta ($02), y
+	bne fill
+	.)
+	
+	; add run-length to screen ptr.
+	lda $02
+	clc
+	adc $04
+	sta $02
+	.(
+	bcc nohi
+	inc $03
+nohi	.)
+	
+	; subtract the length of this span from total (X).
+	txa
+	sec
+	sbc $04
+	tax
+	
+	bne rlespans
+	
+	; add RLE data length to frame pointer.
+	lda $00
+	clc
+	adc $05
+	sta $00
+	.(
+	bcc nohi
+	inc $01
+nohi	.)
+
+	jmp do_spans
+
+spans_done
+	.)
+
+	rts
+
+diffframe
+	; number of spans in $04.
+	and #$7f
+	sta $04
+	
+	;lda #'D'
+	;jsr oswrch
+	
+	; skip over frame type byte.
+	inc $00
+	.(
+	bne nohi
+	inc $01
+nohi	.)
+	
+	.(
+do_span
+	lda $04
+	beq all_done
+
+	dec $04
+	
+	lda ($00)
+	sta $02
+	ldy #1
+	lda ($00), y
+	sta $03
+	iny
+	lda ($00), y
+	; keep (uncompressed span) length in $05.
+	sta $05
+	tay
+	; now ($02) is span start, Y is the length.
+	; advance ($00) to data.
+	lda $00
+	clc
+	adc #3
+	sta $00
+	.(
+	bcc nohi
+	inc $01
+nohi	.)
+	
+fill
+	dey
+	lda ($00), y
+	sta ($02), y
+	cpy #0
+	bne fill
+	
+	; skip ($00) over data.
+	lda $00
+	clc
+	adc $05
+	sta $00
+	.(
+	bcc nohi
+	inc $01
+nohi	.)
+	
+	jmp do_span
+	
+all_done
+	rts
+	.)
+
+rawframe
+	.(
+	
+	;lda #'W'
+	;jsr oswrch
+	
+	; skip over frame-type byte
+	inc $00
+	.(
+	bne nohi
+	inc $01
+nohi	.)
+
+	lda #<$7C00
+	ldx #>$7C00
+	sta $02
+	stx $03
+	
+	; copy src pointer
+	lda $00
+	ldx $01
+	sta $04
+	stx $05
+
+	ldx #3
+	ldy #0
+copy
+	lda ($04), y
+	sta ($02), y
+	dey
+	bne copy
+
+	inc $05
+	inc $03
+	dex
+	bne copy
+	
+	ldy #0
+copy2
+	lda ($04), y
+	sta ($02), y
+	iny
+	cpy #232
+	bne copy2
+	
+	; add frame size to frame ptr
+	lda $00
+	clc
+	adc #<1000
+	sta $00
+	lda $01
+	adc #>1000
+	sta $01
+
+	rts
+	.)
+
+newblock
+	jsr nextblock
+	jsr initptr
+	jmp render
+
+	; end of render.
+	.)
+
+stop
+	jmp stop
