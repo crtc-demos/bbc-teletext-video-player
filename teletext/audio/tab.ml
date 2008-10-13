@@ -18,7 +18,7 @@
          current sample and the desired one.
 *)
 
-let nums =
+let nums' =
   Array.of_list ((List.map
     (fun n -> 1. /. (3. *. 10. ** ((float_of_int n) /. 20.)))
     [0; 2; 4; 6; 8; 10; 12; 14; 16; 18; 20; 22; 24; 26; 28])
@@ -26,7 +26,7 @@ let nums =
 
 (* These are the log volume levels used by BeebEm/SDL.  No idea how they were
    derived.  *)
-let nums' =
+let nums =
   Array.of_list (List.map
     (fun n -> (float_of_int n) /. (3. *. 128.))
     [120; 102; 87; 74; 63; 54; 46; 39; 33; 28; 24; 20; 17; 14; 11; 0])
@@ -98,18 +98,81 @@ type cmd =
     Chan1 of int
   | Chan2 of int
   | Chan3 of int
-  | Achan of int
+  | Achan of int * int * float
   | Nocmd
+
+let level st =
+  nums.(st.chan1) +. nums.(st.chan2) +. nums.(st.chan3)
+
+let deglitch oldstate newval sample =
+  let ordered x =
+    let sorted = List.sort compare x in
+    x = sorted || (List.rev x) = sorted in
+  let orig = level oldstate in
+  let final = level { chan1 = newval; chan2 = newval; chan3 = newval } in
+  let c1 = { oldstate with chan1 = newval } in
+  let d1 = level c1 in
+  let d123 =
+    [ orig; d1; level { c1 with chan2 = newval }; final ]
+  and d132 =
+    [ orig; d1; level { c1 with chan3 = newval }; final ] in
+  let c2 = { oldstate with chan2 = newval } in
+  let d2 = level c2 in
+  let d213 =
+    [ orig; d2; level { c2 with chan1 = newval }; final ]
+  and d231 =
+    [ orig; d2; level { c2 with chan3 = newval }; final ] in
+  let c3 = { oldstate with chan3 = newval } in
+  let d3 = level c3 in
+  let d312 =
+    [ orig; d3; level { c3 with chan1 = newval }; final ]
+  and d321 =
+    [ orig; d3; level { c3 with chan2 = newval }; final ] in
+  let things =
+    [(0, d123); (1, d132); (2, d213); (3, d231); (4, d312); (5, d321)] in
+  try
+    let (sought, vals) = List.find (fun (_, seq) -> ordered seq) things in
+    (*begin match vals with
+      [a; b; c; d] ->
+	Printf.printf "Using order %d: %f -> %f -> %f -> %f\n" sought a b c d;
+    | _ -> failwith "Oops."
+    end; *)
+    sought, 0.0
+  with Not_found ->
+    (*let prt = function
+      [a; b; c; d] -> Printf.sprintf "%f -> %f -> %f -> %f" a b c d
+    | _ -> "" in*)
+    (*Printf.printf "Glitch. Combinations:\n%s\n%s\n%s\n%s\n%s\n%s\n"
+      (prt d123) (prt d132)
+      (prt d213) (prt d231)
+      (prt d312) (prt d321); *)
+    (* Find lowest glitch.  *)
+    let glitch l =
+      let cmp = if orig > final then (>) else (<) in
+      let err, _ = List.fold_left
+	(fun (err, last) n ->
+	  if cmp n last then
+	    (err +. (abs_float (n -. last)), n)
+	  else
+	    (err, n))
+	(0.0, List.hd l)
+	l in
+      err in
+    let glitches = List.map (fun (n, l) -> (n, glitch l)) things in
+    let bestglitch =
+      List.sort (fun (_, a) (_, b) -> compare a b) glitches in
+    let (lo, err) = List.hd bestglitch in
+    (*Printf.printf "Chosen sequence %d, err %f\n" lo err;*)
+    lo, err
 
 let sconv inbuf outbuf state =
   let lookahead = 10 in
+  let glitch_factor = 0.5 in
   let memos = Hashtbl.create 4096 in
   let get_sample n =
     let samp = (Char.code inbuf.[n * 2])
 	       + 256 * (Char.code inbuf.[n * 2 + 1]) in
     (float_of_int samp) /. 65535.0 in
-  let level st =
-    nums.(st.chan1) +. nums.(st.chan2) +. nums.(st.chan3) in
   let minimise state samp modfn =
     let best_val = ref (-1)
     and lowest_err = ref infinity
@@ -153,7 +216,9 @@ let sconv inbuf outbuf state =
           (fun st' n -> { chan1 = n; chan2 = n; chan3 = n }) in
       let allchan_lookahead_err, _, _ =
         memoized_search allchan_st (succ n) (pred lah) in
-      let allchan_err_tot = allchan_err +. allchan_lookahead_err in
+      let glitch, glitch_err = deglitch st allchan_lev this_samp in
+      let allchan_err_tot = allchan_err +. allchan_lookahead_err
+			    +. glitch_factor *. glitch_err in
       (* And the winner is...  *)
       if chan1_err_tot <= chan2_err_tot
 	 && chan1_err_tot <= chan3_err_tot
@@ -168,7 +233,7 @@ let sconv inbuf outbuf state =
 		  && chan3_err_tot <= allchan_err_tot then begin
 	chan3_err_tot, chan3_st, (Chan3 chan3_lev)
       end else begin
-	allchan_err_tot, allchan_st, (Achan allchan_lev)
+	allchan_err_tot, allchan_st, Achan (allchan_lev, glitch, glitch_err)
       end
     end
   and memoized_search st n lah =
@@ -181,26 +246,32 @@ let sconv inbuf outbuf state =
       | _ -> Hashtbl.add memos (st, n, lah) res
       end;
       res in
+  let out idx v =
+    outbuf.[idx] <- Char.chr v in
   let curstate = ref state in
   for i = 0 to (String.length outbuf) - 1 do
     let err, newstate, ccmd = memoized_search !curstate i lookahead in
     begin match ccmd with
       Chan1 n ->
 	Printf.printf "%d: change channel 1 to %d: error (lookahead) is %f\n"
-          i n err
+          i n err;
+	out i (0b10010000 lor n)
     | Chan2 n ->
 	Printf.printf "%d: change channel 2 to %d: error (lookahead) is %f\n"
-          i n err
+          i n err;
+	out i (0b10110000 lor n)
     | Chan3 n ->
 	Printf.printf "%d: change channel 3 to %d: error (lookahead) is %f\n"
-          i n err
-    | Achan n ->
-	Printf.printf "%d: change all channels to %d: error (lookahead) is %f\n"
-          i n err
+          i n err;
+	out i (0b11010000 lor n)
+    | Achan (n, glitch, glitch_err) ->
+	Printf.printf "%d: change all channels to %d: error (lookahead) is %f, glitch sequence %d with error %f\n"
+          i n err glitch glitch_err;
+	out i ((glitch lsl 4) lor n)
     | Nocmd -> ()
     end;
-    let samp = int_of_float (255. *. (level newstate)) in
-    outbuf.[i] <- Char.chr samp;
+    (*let samp = int_of_float (255. *. (level newstate)) in
+    outbuf.[i] <- Char.chr samp;*)
     curstate := newstate
   done;
   !curstate

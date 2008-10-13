@@ -205,8 +205,11 @@ inittimer1irq
 	sta USR_IER
 
 	; Timer1 latches, 1000000/125 = 8000Hz
-	lda #<125
-	ldx #>125
+	;lda #<125
+	;ldx #>125
+	; 1000000/80 = 12500Hz
+	lda #<80
+	ldx #>80
 	sta USR_T1C_L
 	stx USR_T1C_H
 
@@ -300,35 +303,25 @@ irqhandler
 	
 	lda ($10)
 	
-	eor #$ff
-	
-	; linear sound!
-	;lsr
-	;lsr
-	;lsr
-	;lsr
-	;ora #$90
+	bpl allchannels
+		
+	jsr soundstrobe
+	jmp played_samp
 
-	; cheap log sound!
-	;tay
-	;lda $3900, y
-
-	;sta $fe41
-	; set strobe low...
-	;stz $fe40
-
-	; channel volume tables at $3900, $3A00, $3B00
-
+allchannels
+	; todo -- glitch sequence ordering.
+	and #15
 	tay
+	ora #$90
+	jsr soundstrobe
+	tya
+	ora #$b0
+	jsr soundstrobe
+	tya
+	ora #$d0
+	jsr soundstrobe
 
-	; these jsrs waste a bit of time! Might want to inline.
-	lda $3900, y
-	jsr soundstrobe
-	lda $3a00, y
-	jsr soundstrobe
-	lda $3b00, y
-	jsr soundstrobe
-
+played_samp
 	; just for shits & giggles
 	lda #0
 	sta ($10)
