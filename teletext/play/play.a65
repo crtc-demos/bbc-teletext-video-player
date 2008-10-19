@@ -8,16 +8,11 @@
 	.(
 	jsr openfile
 	jsr loadblock
+	jsr queueblock
 	jsr initptr
-rept
-	jsr render
 
-	lda #19
-	jsr osbyte
-	lda #19
-	jsr osbyte
-
-	jmp rept
+	jsr setup_event
+	jsr pollvideo
 
 	rts
 	.)
@@ -86,10 +81,21 @@ nextblock
 	.(
 	lda handle
 	sta gbpb_fh
-	lda #0
-	sta gbpb_io
+	stz gbpb_io
+	
+	lda $09
+	cmp #2
+	beq secondbuf
 	lda #$5C
+	jmp chosenbuf
+secondbuf
+	lda #$6C
+chosenbuf
 	sta gbpb_io+1
+	
+	; clear video request
+	stz $09
+	
 	lda #<4096
 	sta gbpb_tfer
 	lda #>4096
@@ -101,12 +107,101 @@ nextblock
 	rts
 	.)
 
+queueblock
+	.(
+	lda #2
+	sta $09
+	jsr nextblock
+	rts
+	.)
+
 initptr
 	.(
 	lda #0
 	ldx #$5C
 	sta $00
 	stx $01
+	
+	; $0a is current video buffer (zero).
+	stz $0a
+	
+	rts
+	.)
+
+; poll $09 for video-frame requests.
+
+pollvideo
+	.(
+repeat
+	lda $09
+	beq repeat
+	
+	jsr nextblock
+	
+	jmp repeat
+	
+	rts
+	.)
+
+setup_event
+	.(
+	lda #<render_event
+	ldx #>render_event
+	sta $220
+	stx $221
+	
+	; enable vsync event
+	lda #14
+	ldx #4
+	jsr osbyte
+
+	; draw frame/don't draw frame
+	stz $07
+	
+	; renderer busy
+	stz $08
+	
+	rts
+	.)
+
+render_event
+	.(
+	php
+	pha
+	txa
+	pha
+	tya
+	pha
+	
+	lda $07
+	beq alt
+	
+	lda $08
+	bne busy
+
+	; busy
+	lda #1
+	sta $08
+	
+	; enable interrupts to do the actual rendering.
+	cli
+	jsr render
+	sei
+	
+	; not busy
+	stz $08
+alt
+	eor #$01
+	sta $07
+	
+busy
+	
+	pla
+	tay
+	pla
+	tax
+	pla
+	plp
 	rts
 	.)
 
@@ -347,12 +442,33 @@ copy2
 	.)
 
 newblock
-	jsr nextblock
-	jsr initptr
+	lda $0a
+	bne buftwo
+	
+	; switch to second buffer
+	lda #1
+	sta $0a
+	stz $00
+	lda #$6C
+	sta $01
+	; request reload of first buffer
+	lda #1
+	sta $09
+	
+	jmp switched
+buftwo
+	; switch to first buffer
+	stz $0a
+	stz $00
+	lda #$5C
+	sta $01
+	; request reload of second buffer
+	lda #2
+	sta $09
+
+switched
+
 	jmp render
 
 	; end of render.
 	.)
-
-stop
-	jmp stop
