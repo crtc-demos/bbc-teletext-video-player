@@ -6,13 +6,25 @@
 	*= $e00
 	
 	.(
+	; open files, prebuffer
 	jsr openfile
 	jsr loadblock
 	jsr queueblock
-	jsr initptr
+	jsr openfile_v
+	jsr loadblock_v
+	jsr queueblock_v
 
+	; start audio
+	jsr initptr
+	jsr initfreq
+	jsr inittimer1irq
+
+	; start video
+	jsr initptr_v
 	jsr setup_event
-	jsr pollvideo
+
+	; poll a/v to get new blocks
+	jsr pollmedia
 
 	rts
 	.)
@@ -31,7 +43,7 @@ openfile
 	.)
 
 filename
-	.asc "telesqz", 0
+	.asc "noisebits", 0
 
 gbpb_block
 gbpb_fh
@@ -58,7 +70,7 @@ loadblock
 	sta gbpb_fh
 	lda #0
 	sta gbpb_io
-	lda #$5C
+	lda #$3C
 	sta gbpb_io+1
 	lda #<4096
 	sta gbpb_tfer
@@ -81,20 +93,20 @@ nextblock
 	.(
 	lda handle
 	sta gbpb_fh
-	stz gbpb_io
-	
-	lda $09
+	lda #0
+	sta gbpb_io
+	lda $13
 	cmp #2
 	beq secondbuf
-	lda #$5C
+	lda #$3C
 	jmp chosenbuf
 secondbuf
-	lda #$6C
+	lda #$4C
 chosenbuf
 	sta gbpb_io+1
 	
-	; clear video request
-	stz $09
+	; received request, clear.
+	stz $13
 	
 	lda #<4096
 	sta gbpb_tfer
@@ -107,37 +119,155 @@ chosenbuf
 	rts
 	.)
 
+; Queue the block after the first.
 queueblock
 	.(
 	lda #2
-	sta $09
+	sta $13
 	jsr nextblock
 	rts
 	.)
 
-initptr
+handle_v
+	.byt 0
+
+openfile_v
+	.(
+	lda #$40
+	ldx #<filename_v
+	ldy #>filename_v
+	jsr osfind
+	sta handle_v
+	rts
+	.)
+
+filename_v
+	.asc "telesqz", 0
+
+gbpb_block_v
+gbpb_fh_v
+	.byt 0
+gbpb_io_v
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+gbpb_tfer_v
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+gbpb_seq_v
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+
+loadblock_v
+	.(
+	lda handle_v
+	sta gbpb_fh_v
+	lda #0
+	sta gbpb_io_v
+	lda #$5C
+	sta gbpb_io_v+1
+	lda #<4096
+	sta gbpb_tfer_v
+	lda #>4096
+	sta gbpb_tfer_v+1
+	lda #<0
+	sta gbpb_seq_v
+	lda #>0
+	sta gbpb_seq_v+1
+	lda #0/65536
+	sta gbpb_seq_v+2
+	ldx #<gbpb_block_v
+	ldy #>gbpb_block_v
+	lda #3
+	jsr osgbpb
+	
+	; buffer 1 is ready.
+	lda #1
+	sta $0b
+	rts
+	.)
+
+	; $0a is the buffer to reload (1 or 2).
+	; $0b is set to 1 when buffer 1 is ready.
+	; $0c is set to 1 when buffer 2 is ready.
+
+nextblock_v
+	.(
+	lda handle_v
+	sta gbpb_fh_v
+	stz gbpb_io_v
+	
+	lda $0a
+	pha
+	cmp #2
+	beq secondbuf
+	lda #$5C
+	jmp chosenbuf
+secondbuf
+	lda #$6C
+chosenbuf
+	sta gbpb_io_v+1
+	
+	; clear video request
+	stz $0a
+	
+	lda #<4096
+	sta gbpb_tfer_v
+	lda #>4096
+	sta gbpb_tfer_v+1
+	ldx #<gbpb_block_v
+	ldy #>gbpb_block_v
+	lda #3
+	jsr osgbpb
+	
+	pla
+	tax
+	dex
+	lda #1
+	sta $0b,x
+	
+	rts
+	.)
+
+queueblock_v
+	.(
+	lda #2
+	sta $0a
+	jsr nextblock_v
+	rts
+	.)
+
+initptr_v
 	.(
 	lda #0
 	ldx #$5C
 	sta $00
 	stx $01
 	
-	; $0a is current video buffer (zero).
-	stz $0a
+	; $09 is current video buffer (zero).
+	stz $09
 	
 	rts
 	.)
 
-; poll $09 for video-frame requests.
+; poll $0a for video-block requests and $13 for audio-block requests.
 
-pollvideo
+pollmedia
 	.(
 repeat
-	lda $09
+	lda $0a
+	beq skipvideo
+	jsr nextblock_v
+skipvideo
+	lda $13
 	beq repeat
-	
+
 	jsr nextblock
-	
 	jmp repeat
 	
 	rts
@@ -154,12 +284,12 @@ setup_event
 	lda #14
 	ldx #4
 	jsr osbyte
-
-	; draw frame/don't draw frame
-	stz $07
 	
 	; renderer busy
 	stz $08
+	
+	; frames outstanding
+	stz $18
 	
 	rts
 	.)
@@ -173,9 +303,52 @@ render_event
 	tya
 	pha
 	
-	lda $07
-	beq alt
+	lda $17
+	; 4th byte of 1250000
+	cmp #0
+	bcc no_new_frame
+	bne new_frame
+	lda $16
+	; 3rd byte of 1250000
+	cmp #19
+	bcc no_new_frame
+	bne new_frame
+	lda $15
+	; 2nd byte of 1250000
+	cmp #18
+	bcc no_new_frame
+	bne new_frame
+	lda $14
+	; 1st byte of 1250000
+	cmp #208
+	bcc no_new_frame
+new_frame
+	lda $14
+	sec
+	; 1st byte of 1250000
+	sbc #208
+	sta $14
+	lda $15
+	; 2nd byte of 1250000
+	sbc #18
+	sta $15
+	lda $16
+	; 3rd byte of 1250000
+	sbc #19
+	sta $16
+	lda $17
+	; 4th byte of 1250000
+	sbc #0
+	sta $17
+
+	inc $18
+
+no_new_frame
+
+	lda $18
+	beq no_frames
 	
+	.(
 	lda $08
 	bne busy
 
@@ -188,14 +361,16 @@ render_event
 	jsr render
 	sei
 	
+	; decrement number of outstanding frames to render.
+	dec $18
+	
 	; not busy
 	stz $08
-alt
-	eor #$01
-	sta $07
 	
 busy
-	
+	.)
+no_frames
+
 	pla
 	tay
 	pla
@@ -207,6 +382,13 @@ busy
 
 render
 	.(
+	ldx $09
+	lda $0b,x
+	bne ready
+	; if buffer isn't ready, drop out now.
+	rts
+ready
+	
 	lda ($00)
 	cmp #127
 	.(
@@ -442,33 +624,301 @@ copy2
 	.)
 
 newblock
-	lda $0a
+	lda $09
 	bne buftwo
 	
 	; switch to second buffer
 	lda #1
-	sta $0a
+	sta $09
 	stz $00
 	lda #$6C
 	sta $01
 	; request reload of first buffer
 	lda #1
-	sta $09
+	sta $0a
+	; buffer 1 not ready.
+	stz $0b
 	
 	jmp switched
 buftwo
 	; switch to first buffer
-	stz $0a
+	stz $09
 	stz $00
 	lda #$5C
 	sta $01
 	; request reload of second buffer
 	lda #2
-	sta $09
-
+	sta $0a
+	; buffer 2 not ready.
+	stz $0c
 switched
 
 	jmp render
 
 	; end of render.
+	.)
+
+; Initialise $11,$10 to point to sound data (first 4K buffer, at $3c00).
+; $12 tells which block is active (0/1).
+initptr
+	.(
+	lda #<$3C00
+	ldx #>$3C00
+	sta $10
+	stx $11
+	stz $12
+	stz $13
+	; synch counters.
+	stz $14
+	stz $15
+	stz $16
+	stz $17
+	rts
+	.)
+
+#define SYS_T1C_L $fe44
+#define SYS_T1C_H $fe45
+#define SYS_T1L_L $fe46
+#define SYS_T1L_H $fe47
+#define SYS_T2C_L $fe48
+#define SYS_T2C_H $fe49
+#define SYS_SR $fe4a
+#define SYS_ACR $fe4b
+#define SYS_PCR $fe4c
+#define SYS_IFR $fe4d
+#define SYS_IER $fe4e
+
+#define USR_T1C_L $fe64
+#define USR_T1C_H $fe65
+#define USR_T1L_L $fe66
+#define USR_T1L_H $fe67
+#define USR_T2C_L $fe68
+#define USR_T2C_H $fe69
+#define USR_SR $fe6a
+#define USR_ACR $fe6b
+#define USR_PCR $fe6c
+#define USR_IFR $fe6d
+#define USR_IER $fe6e
+
+oldirq1v
+	.word 0
+
+inittimer1irq
+	.(
+	lda $204
+	ldx $205
+	sta oldirq1v
+	stx oldirq1v+1
+	
+	sei
+
+	; Continuous interrupts for timer 1.
+	lda USR_ACR
+	and #$3f
+	ora #$40
+	sta USR_ACR
+
+	; Point at irq handler.
+	lda #<irqhandler
+	ldx #>irqhandler
+	sta $204
+	stx $205
+
+	; Enable Usr timer 1 interrupt.
+	lda #$c0
+	sta USR_IER
+
+	; Timer1 latches, 1000000/125 = 8000Hz
+	lda #<125
+	ldx #>125
+	; 1000000/80 = 12500Hz
+	;lda #<80
+	;ldx #>80
+	sta USR_T1C_L
+	stx USR_T1C_H
+
+	; Disable System VIA interrupts.
+	;lda #$7f
+	;sta SYS_IER
+	; Enable system timer 1 (only).
+	;lda #$c0
+	;sta SYS_IER
+
+	cli
+	
+	rts
+	.)
+
+soundstrobe
+	.(
+	sta $fe41
+	; strobe is supposed to be at least 8uS. This should do.
+	stz $fe40
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	lda #$08
+	sta $fe40
+	rts
+	.)
+
+; initialise sound frequencies on 3 channels.
+initfreq
+	.(
+	sei
+	
+	lda #$ff
+	sta $fe43
+	
+	; channel 3
+	lda #$80
+	jsr soundstrobe
+	lda #$00
+	jsr soundstrobe
+	
+	; channel 2
+	lda #$a0
+	jsr soundstrobe
+	lda #$00
+	jsr soundstrobe
+	
+	; channel 1
+	lda #$c0
+	jsr soundstrobe
+	lda #$00
+	jsr soundstrobe
+	
+	cli
+	rts
+	.)
+
+; $14,$15,$16,$17 are sample counter.
+
+exit
+	pla
+	sta $fc
+	jmp (oldirq1v)
+
+irqhandler
+	.(
+	lda $fc
+	pha
+
+	lda #$c0
+	bit USR_IFR
+	; top bit clear - not interrupt from 6522 (user VIA).
+	bpl exit
+	; bit 6 clear - not our interrupt, process next in chain.
+	bvc exit
+
+	; Clear timer1 interrupt flag.
+	lda USR_T1C_L
+	
+	; want Y too.
+	tya
+	pha
+		
+	; play sample!
+	
+	; set 'slow' databus lines to output (might not need to do this each
+	; cycle?)
+	;lda #$ff
+	;sta $fe43
+		
+	lda ($10)
+	
+	bpl allchannels
+	
+	; inlined below.
+	;jsr soundstrobe
+	
+write_and_incr
+	sta $fe41
+	stz $fe40
+	; synch counter
+	clc
+	lda $14
+	adc #<2997
+	sta $14
+	lda $15
+	adc #>2997
+	sta $15
+	lda $16
+	adc #0
+	sta $16
+	.(
+	bcc nohi
+	inc $17
+nohi	.)
+	
+	lda #$08
+	sta $fe40
+	
+	jmp played_samp
+
+allchannels
+	; todo -- glitch sequence ordering.
+	and #15
+	tay
+	ora #$90
+	jsr soundstrobe
+	tya
+	ora #$b0
+	jsr soundstrobe
+	tya
+	ora #$d0
+	;jsr soundstrobe
+	jmp write_and_incr
+
+played_samp
+	; just for shits & giggles
+	;lda #0
+	;sta ($10)
+
+	; move to next sample / check for end-of-buffer.
+	inc $10
+	.(
+	bne nohi
+	lda $12
+	bne buftwo
+	inc $11
+	lda $11
+	cmp #$4c
+	bcc nohi
+	; switch to second buffer.
+	lda #1
+	sta $12
+	; request reload of buffer 1.
+	sta $13
+	stz $10
+	lda #$4c
+	sta $11
+	jmp nohi
+buftwo
+	inc $11
+	lda $11
+	cmp #$5c
+	bcc nohi
+	; switch to first buffer.
+	stz $12
+	; request reload of buffer 2.
+	lda #2
+	sta $13
+	stz $10
+	lda #$3c
+	sta $11
+nohi
+	.)
+	
+	; handled our interrupt, don't chain to next.
+	pla
+	tay
+	pla
+	sta $fc
+	rti
+
 	.)

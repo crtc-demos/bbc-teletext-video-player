@@ -272,6 +272,7 @@ let sconv inbuf outbuf state =
     end;
     (*let samp = int_of_float (255. *. (level newstate)) in
     outbuf.[i] <- Char.chr samp;*)
+    Hashtbl.clear memos;
     curstate := newstate
   done;
   !curstate
