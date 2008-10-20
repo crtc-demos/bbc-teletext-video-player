@@ -277,13 +277,13 @@ setup_event
 	.(
 	lda #<render_event
 	ldx #>render_event
-	sta $220
-	stx $221
+	;sta $220
+	;stx $221
 	
 	; enable vsync event
-	lda #14
-	ldx #4
-	jsr osbyte
+	;lda #14
+	;ldx #4
+	;jsr osbyte
 	
 	; renderer busy
 	stz $08
@@ -738,11 +738,11 @@ inittimer1irq
 	stx USR_T1C_H
 
 	; Disable System VIA interrupts.
-	;lda #$7f
-	;sta SYS_IER
-	; Enable system timer 1 (only).
-	;lda #$c0
-	;sta SYS_IER
+	lda #$7f
+	sta SYS_IER
+	; Enable system timer 1 and CA1 (vsync).
+	lda #$c1
+	sta SYS_IER
 
 	cli
 	
@@ -798,10 +798,26 @@ initfreq
 
 ; $14,$15,$16,$17 are sample counter.
 
-exit
+exitirq
+	.(
+	lda #$82
+	bit SYS_IFR
+	; top bit clear - not irq from sys via
+	bpl done
+	and #2
+	beq done
+	
+	; clear CA1 interrupt
+	lda #2
+	sta SYS_IFR
+
+	jsr render_event	
+
+done
 	pla
 	sta $fc
 	jmp (oldirq1v)
+	.)
 
 irqhandler
 	.(
@@ -811,9 +827,9 @@ irqhandler
 	lda #$c0
 	bit USR_IFR
 	; top bit clear - not interrupt from 6522 (user VIA).
-	bpl exit
+	bpl exitirq
 	; bit 6 clear - not our interrupt, process next in chain.
-	bvc exit
+	bvc exitirq
 
 	; Clear timer1 interrupt flag.
 	lda USR_T1C_L

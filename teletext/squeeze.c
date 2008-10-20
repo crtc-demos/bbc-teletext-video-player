@@ -39,7 +39,7 @@ squeeze (const char *filename, const char *outfile)
 
       printf ("frame %d\n", frame);
 
-      for (y = 0; y < 24; y++)
+      for (y = 0; y < 25; y++)
         for (x = 0; x < 40; x++)
 	  {
 	    unsigned int byte;
@@ -113,7 +113,7 @@ squeeze (const char *filename, const char *outfile)
 	      continue;
 	    }
 
-	  for (diff = 0; diff < 40 * 24;)
+	  for (diff = 0; diff < 40 * 25;)
             {
 	      if (videoram[diff] != previous[diff])
 		{
@@ -122,7 +122,7 @@ squeeze (const char *filename, const char *outfile)
 		  int seen = -1, count = 0;
 
 		  for (diffend = diff;
-		       diffend < 40 * 24 && diffend < diff + 256;
+		       diffend < 40 * 25 && diffend < diff + 256;
 	               diffend++)
 	            {
 		      if (videoram[diffend] == previous[diffend])

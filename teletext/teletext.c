@@ -712,7 +712,7 @@ randomize (void)
 {
   int x, y;
   
-  for (y = 0; y < 480; y++)
+  for (y = 0; y < 500; y++)
     {
       unsigned int *img = image->pixels;
       
@@ -764,7 +764,7 @@ do_playback (const char *filename)
       
       fscanf (fh, " ---");
 
-      for (y = 0; y < 24; y++)
+      for (y = 0; y < 25; y++)
         for (x = 0; x < 40; x++)
 	  {
 	    unsigned int byte;
@@ -772,7 +772,7 @@ do_playback (const char *filename)
 	    videoram[y * 40 + x] = byte;
 	  }
 
-      for (y = 0; y < 24; y++)
+      for (y = 0; y < 25; y++)
         render_row (&videoram[0], y);
 
       SDL_UpdateRect (screen, 0, 0, screen->w, screen->h);
@@ -848,7 +848,7 @@ main (int argc, char *argv[])
   
   atexit (SDL_Quit);
   
-  screen = SDL_SetVideoMode (480, 480, 32, SDL_SWSURFACE);
+  screen = SDL_SetVideoMode (480, 500, 32, SDL_SWSURFACE);
   if (!screen)
     {
       fprintf (stderr, "Couldn't set video mode: %s\n", SDL_GetError ());
@@ -890,7 +890,7 @@ main (int argc, char *argv[])
   
   memset (&videoram[0], ' ', sizeof (videoram));
 
-  for (y = 0; y < 24; y++)
+  for (y = 0; y < 25; y++)
     {
       int rcost, x;
       
@@ -929,7 +929,7 @@ main (int argc, char *argv[])
 
       fprintf (hf, "---\n");
 
-      for (y = 0; y < 24; y++)
+      for (y = 0; y < 25; y++)
 	{
 	  int x;
 	  for (x = 0; x < 40; x++)
@@ -948,7 +948,7 @@ main (int argc, char *argv[])
     exit (0);
   
   /* Test pattern:
-  for (y = 0; y < 24; y++)
+  for (y = 0; y < 25; y++)
     memcpy (&videoram[y * 40], "0123456789012345678901234567890123456789", 40);
   */
   
