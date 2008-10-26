@@ -749,6 +749,141 @@ randomize (void)
     }
 }
 
+void
+block (int xpos, int ypos, int xsize, int ysize, int read,
+       int *radj, int *gadj, int *badj)
+{
+  int x, y;
+  int rtot = 0, gtot = 0, btot = 0;
+  
+  if ((xpos + xsize) >= 480 || xpos < 0 || (ypos + ysize) >= 500 || ypos < 0)
+    return;
+  
+  for (y = 0; y < ysize; y++)
+    {
+      unsigned int *img = image->pixels;
+      
+      img += (ypos + y) * image->pitch / 4;
+
+      for (x = 0; x < xsize; x++)
+	{
+	  unsigned int ipix = img[xpos + x];
+	  int r, g, b;
+	  
+	  r = (ipix >> 16) & 0xff;
+	  g = (ipix >> 8) & 0xff;
+	  b = ipix & 0xff;
+	  
+	  if (read)
+	    {
+	      rtot += r;
+	      gtot += g;
+	      btot += b;
+	    }
+	  else
+	    {
+	      /* Warning: fudge factor below!  */
+	      r += *radj / 3;
+	      g += *gadj / 3;
+	      b += *badj / 3;
+	      
+	      r = (r < 0) ? 0 : (r > 255) ? 255 : r;
+	      g = (g < 0) ? 0 : (g > 255) ? 255 : g;
+	      b = (b < 0) ? 0 : (b > 255) ? 255 : b;
+
+	      img[xpos + x] = b | (g << 8) | (r << 16);
+	    }
+	}
+    }
+  
+  if (read)
+    {
+      *radj = rtot / (xsize * ysize);
+      *gadj = gtot / (xsize * ysize);
+      *badj = btot / (xsize * ysize);
+    }
+}
+
+void
+diffuse (void)
+{
+  int x, y;
+  int l_to_r = 1;
+  
+  for (y = 0; y < 500; y += 20)
+    {
+      int offsets[3] = {0, 6, 14};
+      int sizes[3] = {6, 8, 6};
+      int row;
+      
+      for (row = 0; row < 3; row++)
+        {
+	  int yblktop = y + offsets[row];
+	  int ynexttop = y + offsets[row] + sizes[row];
+	  int ynextsize = sizes[(row + 1) % 3];
+	  
+	  if (l_to_r)
+	    for (x = 0; x < 480; x += 6)
+              {
+		int ravg, gavg, bavg;
+		int rsat, gsat, bsat;
+		int rerr, gerr, berr;
+
+		block (x, yblktop, 6, sizes[row], 1, &ravg, &gavg, &bavg);
+		rsat = (ravg > 127) ? 255 : 0;
+		gsat = (gavg > 127) ? 255 : 0;
+		bsat = (bavg > 127) ? 255 : 0;
+		rerr = ((ravg - rsat) * 7) / 16;
+		gerr = ((gavg - gsat) * 7) / 16;
+		berr = ((bavg - bsat) * 7) / 16;
+		block (x + 6, yblktop, 6, sizes[row], 0, &rerr, &gerr, &berr);
+		rerr = ((ravg - rsat) * 3) / 16;
+		gerr = ((gavg - gsat) * 3) / 16;
+		berr = ((bavg - bsat) * 3) / 16;
+		block (x - 6, ynexttop, 6, ynextsize, 0, &rerr, &gerr, &berr);
+		rerr = ((ravg - rsat) * 5) / 16;
+		gerr = ((gavg - gsat) * 5) / 16;
+		berr = ((bavg - bsat) * 5) / 16;
+		block (x, ynexttop, 6, ynextsize, 0, &rerr, &gerr, &berr);
+		rerr = ((ravg - rsat) * 1) / 16;
+		gerr = ((gavg - gsat) * 1) / 16;
+		berr = ((bavg - bsat) * 1) / 16;
+		block (x + 6, ynexttop, 6, ynextsize, 0, &rerr, &gerr, &berr);
+	      }
+	  else
+            for (x = 474; x >= 0; x -= 6)
+	      {
+		int ravg, gavg, bavg;
+		int rsat, gsat, bsat;
+		int rerr, gerr, berr;
+
+		block (x, yblktop, 6, sizes[row], 1, &ravg, &gavg, &bavg);
+		rsat = (ravg > 127) ? 255 : 0;
+		gsat = (gavg > 127) ? 255 : 0;
+		bsat = (bavg > 127) ? 255 : 0;
+		rerr = ((ravg - rsat) * 7) / 16;
+		gerr = ((gavg - gsat) * 7) / 16;
+		berr = ((bavg - bsat) * 7) / 16;
+		block (x - 6, yblktop, 6, sizes[row], 0, &rerr, &gerr, &berr);
+		rerr = ((ravg - rsat) * 3) / 16;
+		gerr = ((gavg - gsat) * 3) / 16;
+		berr = ((bavg - bsat) * 3) / 16;
+		block (x + 6, ynexttop, 6, ynextsize, 0, &rerr, &gerr, &berr);
+		rerr = ((ravg - rsat) * 5) / 16;
+		gerr = ((gavg - gsat) * 5) / 16;
+		berr = ((bavg - bsat) * 5) / 16;
+		block (x, ynexttop, 6, ynextsize, 0, &rerr, &gerr, &berr);
+		rerr = ((ravg - rsat) * 1) / 16;
+		gerr = ((gavg - gsat) * 1) / 16;
+		berr = ((bavg - bsat) * 1) / 16;
+		block (x - 6, ynexttop, 6, ynextsize, 0, &rerr, &gerr, &berr);
+	      }
+
+	  l_to_r = !l_to_r;
+        }
+    }
+}
+
 int
 do_playback (const char *filename)
 {
@@ -868,7 +1003,8 @@ main (int argc, char *argv[])
 #endif
 
   if (!playback)  
-    randomize ();
+    diffuse ();
+    // randomize ();
   
   /*SDL_BlitSurface (image, NULL, screen, NULL);*/
   

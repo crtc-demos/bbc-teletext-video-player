@@ -34,6 +34,7 @@ squeeze (const char *filename, const char *outfile)
       unsigned int rlesize = 0;
       int fragments = 0;
       enum { RLE, DIFF, RAW } frametype;
+      int rle_overflow = 0;
       
       fscanf (fh, " ---");
 
@@ -120,6 +121,7 @@ squeeze (const char *filename, const char *outfile)
 		  int diffend;
 		  int i;
 		  int seen = -1, count = 0;
+		  int rleparts = 0;
 
 		  for (diffend = diff;
 		       diffend < 40 * 25 && diffend < diff + 256;
@@ -173,6 +175,7 @@ squeeze (const char *filename, const char *outfile)
 			            {
 				      printf ("%d * %.2x, ", count, seen);
 			              rlesize += 2;
+				      rleparts++;
 				    }
 				  else
 				    {
@@ -193,8 +196,12 @@ squeeze (const char *filename, const char *outfile)
 			  printf ("%d * %2x\n", count, seen);
 			  rlesize += 2;
 			  diffsize += diffend - diff;
+			  rleparts++;
+			  /* Hmm... this is a bit ugly.  */
+			  if (rleparts > 126)
+			    rle_overflow = 1;
 			}
-		      else
+		      else if (count > 0)
 		        {
 			  fputc (count & 255, outf);
 			  fputc (seen & 255, outf);
@@ -212,10 +219,10 @@ squeeze (const char *filename, const char *outfile)
 	    {
 	      printf ("plain diff for frame: %d\n", diffsize);
 	      printf ("rle diff for frame: %d\n", rlesize);
-	      if (rlesize < diffsize && rlesize < 1000)
+	      if ((rlesize < diffsize && rlesize < 1000) && !rle_overflow)
 	        frametype = RLE;
 	      else if (diffsize <= rlesize && diffsize < 1000)
-	        frametype = DIFF;
+		frametype = DIFF;
 	      else
 	        frametype = RAW;
 	      /* This is an encoding limit, but lower values may turn out to
@@ -225,6 +232,17 @@ squeeze (const char *filename, const char *outfile)
 		  printf ("too many fragments (%d), encoding as raw\n",
 			  fragments);
 	          frametype = RAW;
+		}
+	      if ((rlesize < diffsize && rlesize < 1000) && rle_overflow)
+	        {
+		  printf ("rle frame overflowed! ");
+		  if (diffsize < 1000)
+		    {
+		      frametype = DIFF;
+		      printf ("switched to plain diff.\n");
+		    }
+		  else if (frametype == RAW)
+		    printf ("left as raw.\n");
 		}
 	    }
         }

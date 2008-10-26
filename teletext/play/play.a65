@@ -3,6 +3,18 @@
 #define osfind $ffce
 #define osgbpb $ffd1
 
+; 10KHz * 100 = 1000000
+#define HZ0 64
+#define HZ1 66
+#define HZ2 15
+#define HZ3 0
+; 1000000 / Hz
+;   - 12.5KHz -> 80
+;   - 10KHz   -> 100
+;   - 8KHz    -> 125
+#define RHZ 100
+
+
 	*= $e00
 	
 	.(
@@ -43,7 +55,7 @@ openfile
 	.)
 
 filename
-	.asc "noisebits", 0
+	.asc "noise10k", 0
 
 gbpb_block
 gbpb_fh
@@ -142,7 +154,7 @@ openfile_v
 	.)
 
 filename_v
-	.asc "telesqz", 0
+	.asc "aphexsqz", 0
 
 gbpb_block_v
 gbpb_fh_v
@@ -225,8 +237,7 @@ chosenbuf
 	lda #3
 	jsr osgbpb
 	
-	pla
-	tax
+	plx
 	dex
 	lda #1
 	sta $0b,x
@@ -291,6 +302,9 @@ setup_event
 	; frames outstanding
 	stz $18
 	
+	; stalled on video block load
+	stz $19
+	
 	rts
 	.)
 
@@ -298,47 +312,37 @@ render_event
 	.(
 	php
 	pha
-	txa
-	pha
-	tya
-	pha
+	phx
+	phy
 	
 	lda $17
-	; 4th byte of 1250000
-	cmp #0
+	cmp #HZ3
 	bcc no_new_frame
 	bne new_frame
 	lda $16
-	; 3rd byte of 1250000
-	cmp #19
+	cmp #HZ2
 	bcc no_new_frame
 	bne new_frame
 	lda $15
-	; 2nd byte of 1250000
-	cmp #18
+	cmp #HZ1
 	bcc no_new_frame
 	bne new_frame
 	lda $14
-	; 1st byte of 1250000
-	cmp #208
+	cmp #HZ0
 	bcc no_new_frame
 new_frame
 	lda $14
 	sec
-	; 1st byte of 1250000
-	sbc #208
+	sbc #HZ0
 	sta $14
 	lda $15
-	; 2nd byte of 1250000
-	sbc #18
+	sbc #HZ1
 	sta $15
 	lda $16
-	; 3rd byte of 1250000
-	sbc #19
+	sbc #HZ2
 	sta $16
 	lda $17
-	; 4th byte of 1250000
-	sbc #0
+	sbc #HZ3
 	sta $17
 
 	inc $18
@@ -355,15 +359,15 @@ no_new_frame
 	; busy
 	lda #1
 	sta $08
+
+	; decrement number of outstanding frames to render.
+	dec $18
 	
 	; enable interrupts to do the actual rendering.
 	cli
 	jsr render
 	sei
-	
-	; decrement number of outstanding frames to render.
-	dec $18
-	
+		
 	; not busy
 	stz $08
 	
@@ -371,10 +375,8 @@ busy
 	.)
 no_frames
 
-	pla
-	tay
-	pla
-	tax
+	ply
+	plx
 	pla
 	plp
 	rts
@@ -385,9 +387,17 @@ render
 	ldx $09
 	lda $0b,x
 	bne ready
-	; if buffer isn't ready, drop out now.
+	; if buffer isn't ready, drop out now (and re-queue frame).
+	inc $18
 	rts
 ready
+	; if a video block load stalled previously, retry it now.
+	lda $19
+	.(
+	beq no_newblock
+	jmp newblock
+no_newblock
+	.)
 	
 	lda ($00)
 	cmp #127
@@ -441,8 +451,7 @@ do_spans
 	inc $01
 nohi	.)
 	
-	lda #0
-	sta $05
+	stz $05
 rlespans
 	ldy $05
 	; get repeat count
@@ -465,30 +474,37 @@ fill
 	bne fill
 	.)
 	
-	; add run-length to screen ptr.
-	lda $02
-	clc
-	adc $04
-	sta $02
+	; add run-length to screen ptr, treating $04==0 as $04==256.
 	.(
+	lda $04
+	beq skip256
+	clc
+	adc $02
+	sta $02
 	bcc nohi
+skip256
 	inc $03
 nohi	.)
 	
 	; subtract the length of this span from total (X).
+	.(
+	lda $04
+	beq xtozero
 	txa
 	sec
 	sbc $04
+xtozero
 	tax
+	.)
 	
 	bne rlespans
 	
 	; add RLE data length to frame pointer.
+	.(
 	lda $00
 	clc
 	adc $05
 	sta $00
-	.(
 	bcc nohi
 	inc $01
 nohi	.)
@@ -550,13 +566,15 @@ fill
 	cpy #0
 	bne fill
 	
-	; skip ($00) over data.
-	lda $00
-	clc
-	adc $05
-	sta $00
+	; skip ($00) over data, treating $05==0 as $05=256.
 	.(
+	lda $05
+	beq skip256
+	clc
+	adc $00
+	sta $00
 	bcc nohi
+skip256
 	inc $01
 nohi	.)
 	
@@ -624,33 +642,51 @@ copy2
 	.)
 
 newblock
+	.(
+	lda $0a
+	beq req_clear
+	; mark block-load stalled.
+	lda #1
+	sta $19
+	; re-queue frame.
+	inc $18
+	rts
+req_clear
+	stz $19
+	.)
+
 	lda $09
 	bne buftwo
-	
+		
 	; switch to second buffer
-	lda #1
-	sta $09
 	stz $00
 	lda #$6C
 	sta $01
-	; request reload of first buffer
+	; request reload of first buffer (should be atomic!)
 	lda #1
+	sei
 	sta $0a
+	; second buffer active.
+	sta $09
 	; buffer 1 not ready.
 	stz $0b
+	cli
 	
 	jmp switched
 buftwo
 	; switch to first buffer
-	stz $09
 	stz $00
 	lda #$5C
 	sta $01
-	; request reload of second buffer
+	; request reload of second buffer (likewise.)
 	lda #2
+	sei
 	sta $0a
+	; first buffer active.
+	stz $09
 	; buffer 2 not ready.
 	stz $0c
+	cli
 switched
 
 	jmp render
@@ -728,12 +764,8 @@ inittimer1irq
 	lda #$c0
 	sta USR_IER
 
-	; Timer1 latches, 1000000/125 = 8000Hz
-	lda #<125
-	ldx #>125
-	; 1000000/80 = 12500Hz
-	;lda #<80
-	;ldx #>80
+	lda #<RHZ
+	ldx #>RHZ
 	sta USR_T1C_L
 	stx USR_T1C_H
 
@@ -756,11 +788,6 @@ soundstrobe
 	stz $fe40
 	nop
 	nop
-	nop
-	nop
-	nop
-	nop
-	nop
 	lda #$08
 	sta $fe40
 	rts
@@ -775,19 +802,19 @@ initfreq
 	sta $fe43
 	
 	; channel 3
-	lda #$80
+	lda #$83
 	jsr soundstrobe
 	lda #$00
 	jsr soundstrobe
 	
 	; channel 2
-	lda #$a0
+	lda #$a3
 	jsr soundstrobe
 	lda #$00
 	jsr soundstrobe
 	
 	; channel 1
-	lda #$c0
+	lda #$c3
 	jsr soundstrobe
 	lda #$00
 	jsr soundstrobe
@@ -835,8 +862,7 @@ irqhandler
 	lda USR_T1C_L
 	
 	; want Y too.
-	tya
-	pha
+	phy
 		
 	; play sample!
 	
@@ -858,10 +884,10 @@ write_and_incr
 	; synch counter
 	clc
 	lda $14
-	adc #<2997
+	adc #<3000
 	sta $14
 	lda $15
-	adc #>2997
+	adc #>3000
 	sta $15
 	lda $16
 	adc #0
@@ -931,8 +957,7 @@ nohi
 	.)
 	
 	; handled our interrupt, don't chain to next.
-	pla
-	tay
+	ply
 	pla
 	sta $fc
 	rti

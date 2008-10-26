@@ -302,8 +302,8 @@ let _ =
   if (Array.length Sys.argv) != 3 then
     failwith (Printf.sprintf "Usage: %s <outfile> <dirname>" Sys.argv.(0));
   let layout = gather_files Sys.argv.(2) in
-  (* 10 megabyte disk, ooh!  *)
-  let disksize = 10 * 1024 * 1024 / 256 in
+  (* 20 megabyte disk, ooh!  *)
+  let disksize = 20 * 1024 * 1024 / 256 in
   let diskid = 999 in
   let sector_total = do_layout [layout] in
   let fsmap = create_fsmap sector_total disksize in
