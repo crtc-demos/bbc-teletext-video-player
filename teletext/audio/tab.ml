@@ -18,7 +18,7 @@
          current sample and the desired one.
 *)
 
-let nums' =
+let nums =
   Array.of_list ((List.map
     (fun n -> 1. /. (3. *. 10. ** ((float_of_int n) /. 20.)))
     [0; 2; 4; 6; 8; 10; 12; 14; 16; 18; 20; 22; 24; 26; 28])
@@ -26,7 +26,7 @@ let nums' =
 
 (* These are the log volume levels used by BeebEm/SDL.  No idea how they were
    derived.  *)
-let nums =
+let nums' =
   Array.of_list (List.map
     (fun n -> (float_of_int n) /. (3. *. 128.))
     [120; 102; 87; 74; 63; 54; 46; 39; 33; 28; 24; 20; 17; 14; 11; 0])
@@ -253,16 +253,16 @@ let sconv inbuf outbuf state =
     let err, newstate, ccmd = memoized_search !curstate i lookahead in
     begin match ccmd with
       Chan1 n ->
-	Printf.printf "%d: change channel 1 to %d: error (lookahead) is %f\n"
-          i n err;
+	(*Printf.printf "%d: change channel 1 to %d: error (lookahead) is %f\n"
+          i n err;*)
 	out i (0b10010000 lor n)
     | Chan2 n ->
-	Printf.printf "%d: change channel 2 to %d: error (lookahead) is %f\n"
-          i n err;
+	(*Printf.printf "%d: change channel 2 to %d: error (lookahead) is %f\n"
+          i n err;*)
 	out i (0b10110000 lor n)
     | Chan3 n ->
-	Printf.printf "%d: change channel 3 to %d: error (lookahead) is %f\n"
-          i n err;
+	(*Printf.printf "%d: change channel 3 to %d: error (lookahead) is %f\n"
+          i n err;*)
 	out i (0b11010000 lor n)
     | Achan (n, glitch, glitch_err) ->
 	Printf.printf "%d: change all channels to %d: error (lookahead) is %f, glitch sequence %d with error %f\n"

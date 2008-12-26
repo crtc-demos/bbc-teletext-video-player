@@ -4,16 +4,92 @@
 #define osgbpb $ffd1
 
 ; 10KHz * 100 = 1000000
+;#define HZ0 64
+;#define HZ1 66
+;#define HZ2 15
+;#define HZ3 0
+
+; 10KHz = 10000
+;#define HZ0 16
+;#define HZ1 39
+;#define HZ2 0
+;#define HZ3 0
+
+; 8KHz / 10 = 800
+;#define HZ0 32
+;#define HZ1 3
+;#define HZ2 0
+;#define HZ3 0
+
+; 8KHz = 8000
 #define HZ0 64
-#define HZ1 66
-#define HZ2 15
+#define HZ1 31
+#define HZ2 0
 #define HZ3 0
+
 ; 1000000 / Hz
 ;   - 12.5KHz -> 80
 ;   - 10KHz   -> 100
 ;   - 8KHz    -> 125
-#define RHZ 100
+#define RHZ 125
 
+; These values work OK for Aphex Twin, Come To Daddy video
+
+; Video frames per second (/ 10)
+;#define FPS 3
+
+#define ABUF1 $1400
+#define ABUF1END $2c00
+
+#define ABUF2 $2c00
+#define ABUF2END $4400
+
+#define VBUF1 $4400
+#define VBUF2 $6000
+
+#define VIDBLKSIZE 7168
+#define AUDBLKSIZE 6144
+
+; These values (don't really) work OK for Pitchshifter, Dead Battery
+
+; Video frames per second
+#define FPS 12
+
+;#define ABUF1 $1c00
+;#define ABUF1END $2c00
+
+;#define ABUF2 $2c00
+;#define ABUF2END $3c00
+
+;#define VBUF1 $3c00
+;#define VBUF2 $5c00
+
+;#define VIDBLKSIZE 8192
+;#define AUDBLKSIZE 4096
+
+; Video variables
+#define videoptr      $00
+#define vidtmp1       $02
+#define vidtmp2       $04
+#define vidtmp3       $05
+#define vidtmp4       $06
+#define renderbusy    $08
+#define currentvidbuf $09
+#define vidblockreq   $0a
+#define vidblk1rdy    $0b
+#define vidblk2rdy    $0c
+#define framestodraw  $0d
+#define vidloadstall  $0e
+#define videof        $0f
+
+; Audio variables
+#define audioptr      $10
+#define currentaudbuf $12
+#define audblockreq   $13
+#define samplectr     $14
+#define audblk1rdy    $18
+#define audblk2rdy    $19
+#define audloadstall  $1a
 
 	*= $e00
 	
@@ -25,6 +101,8 @@
 	jsr openfile_v
 	jsr loadblock_v
 	jsr queueblock_v
+
+	jsr setmode
 
 	; start audio
 	jsr initptr
@@ -38,6 +116,34 @@
 	; poll a/v to get new blocks
 	jsr pollmedia
 
+	jsr close_events
+
+	rts
+	.)
+
+vdubytes
+	.byt 22
+	.byt 7
+	.byt 23
+	.byt 0
+	.byt 10
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+	.byt 0
+
+setmode
+	.(
+	ldx #0
+loop
+	lda vdubytes,x
+	jsr oswrch
+	inx
+	cpx #12
+	bne loop
 	rts
 	.)
 
@@ -55,7 +161,7 @@ openfile
 	.)
 
 filename
-	.asc "noise10k", 0
+	.asc "pitch8k", 0
 
 gbpb_block
 gbpb_fh
@@ -80,13 +186,13 @@ loadblock
 	.(
 	lda handle
 	sta gbpb_fh
-	lda #0
+	lda #<ABUF1
 	sta gbpb_io
-	lda #$3C
+	lda #>ABUF1
 	sta gbpb_io+1
-	lda #<4096
+	lda #<AUDBLKSIZE
 	sta gbpb_tfer
-	lda #>4096
+	lda #>AUDBLKSIZE
 	sta gbpb_tfer+1
 	lda #<0
 	sta gbpb_seq
@@ -98,6 +204,12 @@ loadblock
 	ldy #>gbpb_block
 	lda #3
 	jsr osgbpb
+	
+	lda #1
+	sta audblk1rdy
+	
+	stz audloadstall
+	
 	rts
 	.)
 
@@ -107,27 +219,40 @@ nextblock
 	sta gbpb_fh
 	lda #0
 	sta gbpb_io
-	lda $13
+	lda audblockreq
+	pha
 	cmp #2
 	beq secondbuf
-	lda #$3C
+	lda #>ABUF1
 	jmp chosenbuf
 secondbuf
-	lda #$4C
+	lda #>ABUF2
 chosenbuf
 	sta gbpb_io+1
-	
-	; received request, clear.
-	stz $13
-	
-	lda #<4096
+
+	; clear request.
+	stz audblockreq
+
+	lda #<AUDBLKSIZE
 	sta gbpb_tfer
-	lda #>4096
+	lda #>AUDBLKSIZE
 	sta gbpb_tfer+1
 	ldx #<gbpb_block
 	ldy #>gbpb_block
 	lda #3
 	jsr osgbpb
+	bcs end_of_file
+	
+	; mark the loaded block as ready.
+	plx
+	dex
+	lda #1
+	sta audblk1rdy, x
+	
+	rts
+end_of_file
+	plx
+	inc videof
 	rts
 	.)
 
@@ -135,7 +260,7 @@ chosenbuf
 queueblock
 	.(
 	lda #2
-	sta $13
+	sta audblockreq
 	jsr nextblock
 	rts
 	.)
@@ -154,7 +279,7 @@ openfile_v
 	.)
 
 filename_v
-	.asc "aphexsqz", 0
+	.asc "pitchsqz", 0
 
 gbpb_block_v
 gbpb_fh_v
@@ -179,13 +304,13 @@ loadblock_v
 	.(
 	lda handle_v
 	sta gbpb_fh_v
-	lda #0
+	lda #<VBUF1
 	sta gbpb_io_v
-	lda #$5C
+	lda #>VBUF1
 	sta gbpb_io_v+1
-	lda #<4096
+	lda #<VIDBLKSIZE
 	sta gbpb_tfer_v
-	lda #>4096
+	lda #>VIDBLKSIZE
 	sta gbpb_tfer_v+1
 	lda #<0
 	sta gbpb_seq_v
@@ -200,13 +325,13 @@ loadblock_v
 	
 	; buffer 1 is ready.
 	lda #1
-	sta $0b
+	sta vidblk1rdy
 	rts
 	.)
 
-	; $0a is the buffer to reload (1 or 2).
-	; $0b is set to 1 when buffer 1 is ready.
-	; $0c is set to 1 when buffer 2 is ready.
+	; vidblockreq is the buffer to reload (1 or 2).
+	; vidblk1rdy is set to 1 when buffer 1 is ready.
+	; vidblk2rdy is set to 1 when buffer 2 is ready.
 
 nextblock_v
 	.(
@@ -214,68 +339,78 @@ nextblock_v
 	sta gbpb_fh_v
 	stz gbpb_io_v
 	
-	lda $0a
+	lda vidblockreq
 	pha
 	cmp #2
 	beq secondbuf
-	lda #$5C
+	lda #>VBUF1
 	jmp chosenbuf
 secondbuf
-	lda #$6C
+	lda #>VBUF2
 chosenbuf
 	sta gbpb_io_v+1
 	
 	; clear video request
-	stz $0a
+	stz vidblockreq
 	
-	lda #<4096
+	lda #<VIDBLKSIZE
 	sta gbpb_tfer_v
-	lda #>4096
+	lda #>VIDBLKSIZE
 	sta gbpb_tfer_v+1
 	ldx #<gbpb_block_v
 	ldy #>gbpb_block_v
 	lda #3
 	jsr osgbpb
+	bcs end_of_file
 	
 	plx
 	dex
 	lda #1
-	sta $0b,x
+	sta vidblk1rdy,x
 	
+	rts
+
+end_of_file
+	plx
+	inc videof
 	rts
 	.)
 
 queueblock_v
 	.(
 	lda #2
-	sta $0a
+	sta vidblockreq
 	jsr nextblock_v
 	rts
 	.)
 
 initptr_v
 	.(
-	lda #0
-	ldx #$5C
-	sta $00
-	stx $01
+	lda #<VBUF1
+	ldx #>VBUF1
+	sta videoptr
+	stx videoptr+1
 	
-	; $09 is current video buffer (zero).
-	stz $09
+	; currentvidbuf is current video buffer (zero).
+	stz currentvidbuf
 	
 	rts
 	.)
 
-; poll $0a for video-block requests and $13 for audio-block requests.
+; poll vidblockreq for video-block requests and audblockreq for audio-block requests.
 
 pollmedia
 	.(
 repeat
-	lda $0a
+	lda videof
+	beq not_end
+	rts
+not_end
+	lda vidblockreq
 	beq skipvideo
 	jsr nextblock_v
 skipvideo
-	lda $13
+	lda audblockreq
 	beq repeat
 
 	jsr nextblock
@@ -297,13 +432,16 @@ setup_event
 	;jsr osbyte
 	
 	; renderer busy
-	stz $08
+	stz renderbusy
 	
 	; frames outstanding
-	stz $18
+	stz framestodraw
 	
 	; stalled on video block load
-	stz $19
+	stz vidloadstall
+	
+	; end of video file
+	stz videof
 	
 	rts
 	.)
@@ -315,53 +453,53 @@ render_event
 	phx
 	phy
 	
-	lda $17
-	cmp #HZ3
-	bcc no_new_frame
-	bne new_frame
-	lda $16
-	cmp #HZ2
-	bcc no_new_frame
-	bne new_frame
-	lda $15
+	;lda samplectr+3
+	;cmp #HZ3
+	;bcc no_new_frame
+	;bne new_frame
+	;lda samplectr+2
+	;cmp #HZ2
+	;bcc no_new_frame
+	;bne new_frame
+	lda samplectr+1
 	cmp #HZ1
 	bcc no_new_frame
 	bne new_frame
-	lda $14
+	lda samplectr
 	cmp #HZ0
 	bcc no_new_frame
 new_frame
-	lda $14
+	lda samplectr
 	sec
 	sbc #HZ0
-	sta $14
-	lda $15
+	sta samplectr
+	lda samplectr+1
 	sbc #HZ1
-	sta $15
-	lda $16
-	sbc #HZ2
-	sta $16
-	lda $17
-	sbc #HZ3
-	sta $17
+	sta samplectr+1
+	;lda samplectr+2
+	;sbc #HZ2
+	;sta samplectr+2
+	;lda samplectr+3
+	;sbc #HZ3
+	;sta samplectr+3
 
-	inc $18
+	inc framestodraw
 
 no_new_frame
 
-	lda $18
+	lda framestodraw
 	beq no_frames
 	
 	.(
-	lda $08
+	lda renderbusy
 	bne busy
 
 	; busy
 	lda #1
-	sta $08
+	sta renderbusy
 
 	; decrement number of outstanding frames to render.
-	dec $18
+	dec framestodraw
 	
 	; enable interrupts to do the actual rendering.
 	cli
@@ -369,7 +507,7 @@ no_new_frame
 	sei
 		
 	; not busy
-	stz $08
+	stz renderbusy
 	
 busy
 	.)
@@ -384,22 +522,22 @@ no_frames
 
 render
 	.(
-	ldx $09
-	lda $0b,x
+	ldx currentvidbuf
+	lda vidblk1rdy,x
 	bne ready
 	; if buffer isn't ready, drop out now (and re-queue frame).
-	inc $18
+	inc framestodraw
 	rts
 ready
 	; if a video block load stalled previously, retry it now.
-	lda $19
+	lda vidloadstall
 	.(
 	beq no_newblock
 	jmp newblock
 no_newblock
 	.)
 	
-	lda ($00)
+	lda (videoptr)
 	cmp #127
 	.(
 	bne notnew
@@ -414,85 +552,85 @@ notraw	.)
 	bne diffframe
 		
 rleframe
-	sta $06
+	sta vidtmp4
 	
 	;lda #'R'
 	;jsr oswrch
 	
 	; skip over frame type byte.
-	inc $00
+	inc videoptr
 	.(
 	bne nohi
-	inc $01
+	inc videoptr+1
 nohi	.)
 	
 	.(
 do_spans
-	lda $06
+	lda vidtmp4
 	beq spans_done
-	dec $06
+	dec vidtmp4
 	
 	; a run-length encoded frame.
-	lda ($00)
-	sta $02
+	lda (videoptr)
+	sta vidtmp1
 	ldy #1
-	lda ($00), y
-	sta $03
+	lda (videoptr), y
+	sta vidtmp1+1
 	iny
-	lda ($00), y
+	lda (videoptr), y
 	tax
-	; now ($02) is the span start, X is the (uncompressed) length.
-	lda $00
+	; now (vidtmp1) is the span start, X is the (uncompressed) length.
+	lda videoptr
 	clc
 	adc #3
-	sta $00
+	sta videoptr
 	.(
 	bcc nohi
-	inc $01
+	inc videoptr+1
 nohi	.)
 	
-	stz $05
+	stz vidtmp3
 rlespans
-	ldy $05
+	ldy vidtmp3
 	; get repeat count
-	lda ($00), y
-	; stow repeat count in $04
-	sta $04
+	lda (videoptr), y
+	; stow repeat count in vidtmp2
+	sta vidtmp2
 	iny
 	; get byte to write
-	lda ($00), y
+	lda (videoptr), y
 	iny
-	; store Y index in $05
-	sty $05
+	; store Y index in vidtmp3
+	sty vidtmp3
 
-	; now A has byte to write, $04 has repeat count (where 0 means 256).
-	ldy $04
+	; now A has byte to write, vidtmp2 has repeat count (where 0 means 256).
+	ldy vidtmp2
 	.(
 fill
 	dey
-	sta ($02), y
+	sta (vidtmp1), y
 	bne fill
 	.)
 	
-	; add run-length to screen ptr, treating $04==0 as $04==256.
+	; add run-length to screen ptr, treating vidtmp2==0 as vidtmp2==256.
 	.(
-	lda $04
+	lda vidtmp2
 	beq skip256
 	clc
-	adc $02
-	sta $02
+	adc vidtmp1
+	sta vidtmp1
 	bcc nohi
 skip256
-	inc $03
+	inc vidtmp1+1
 nohi	.)
 	
 	; subtract the length of this span from total (X).
 	.(
-	lda $04
+	lda vidtmp2
 	beq xtozero
 	txa
 	sec
-	sbc $04
+	sbc vidtmp2
 xtozero
 	tax
 	.)
@@ -501,12 +639,12 @@ xtozero
 	
 	; add RLE data length to frame pointer.
 	.(
-	lda $00
+	lda videoptr
 	clc
-	adc $05
-	sta $00
+	adc vidtmp3
+	sta videoptr
 	bcc nohi
-	inc $01
+	inc videoptr+1
 nohi	.)
 
 	jmp do_spans
@@ -517,65 +655,65 @@ spans_done
 	rts
 
 diffframe
-	; number of spans in $04.
+	; number of spans in vidtmp2.
 	and #$7f
-	sta $04
+	sta vidtmp2
 	
 	;lda #'D'
 	;jsr oswrch
 	
 	; skip over frame type byte.
-	inc $00
+	inc videoptr
 	.(
 	bne nohi
-	inc $01
+	inc videoptr+1
 nohi	.)
 	
 	.(
 do_span
-	lda $04
+	lda vidtmp2
 	beq all_done
 
-	dec $04
+	dec vidtmp2
 	
-	lda ($00)
-	sta $02
+	lda (videoptr)
+	sta vidtmp1
 	ldy #1
-	lda ($00), y
-	sta $03
+	lda (videoptr), y
+	sta vidtmp1+1
 	iny
-	lda ($00), y
-	; keep (uncompressed span) length in $05.
-	sta $05
+	lda (videoptr), y
+	; keep (uncompressed span) length in vidtmp3.
+	sta vidtmp3
 	tay
-	; now ($02) is span start, Y is the length.
-	; advance ($00) to data.
-	lda $00
+	; now (vidtmp1) is span start, Y is the length.
+	; advance (videoptr) to data.
+	lda videoptr
 	clc
 	adc #3
-	sta $00
+	sta videoptr
 	.(
 	bcc nohi
-	inc $01
+	inc videoptr+1
 nohi	.)
 	
 fill
 	dey
-	lda ($00), y
-	sta ($02), y
+	lda (videoptr), y
+	sta (vidtmp1), y
 	cpy #0
 	bne fill
 	
-	; skip ($00) over data, treating $05==0 as $05=256.
+	; skip (videoptr) over data, treating vidtmp3==0 as vidtmp3=256.
 	.(
-	lda $05
+	lda vidtmp3
 	beq skip256
 	clc
-	adc $00
-	sta $00
+	adc videoptr
+	sta videoptr
 	bcc nohi
 skip256
-	inc $01
+	inc videoptr+1
 nohi	.)
 	
 	jmp do_span
@@ -591,101 +729,101 @@ rawframe
 	;jsr oswrch
 	
 	; skip over frame-type byte
-	inc $00
+	inc videoptr
 	.(
 	bne nohi
-	inc $01
+	inc videoptr+1
 nohi	.)
 
 	lda #<$7C00
 	ldx #>$7C00
-	sta $02
-	stx $03
+	sta vidtmp1
+	stx vidtmp1+1
 	
 	; copy src pointer
-	lda $00
-	ldx $01
-	sta $04
-	stx $05
+	lda videoptr
+	ldx videoptr+1
+	sta vidtmp2
+	stx vidtmp3
 
 	ldx #3
 	ldy #0
 copy
-	lda ($04), y
-	sta ($02), y
+	lda (vidtmp2), y
+	sta (vidtmp1), y
 	dey
 	bne copy
 
-	inc $05
-	inc $03
+	inc vidtmp3
+	inc vidtmp1+1
 	dex
 	bne copy
 	
 	ldy #0
 copy2
-	lda ($04), y
-	sta ($02), y
+	lda (vidtmp2), y
+	sta (vidtmp1), y
 	iny
 	cpy #232
 	bne copy2
 	
 	; add frame size to frame ptr
-	lda $00
+	lda videoptr
 	clc
 	adc #<1000
-	sta $00
-	lda $01
+	sta videoptr
+	lda videoptr+1
 	adc #>1000
-	sta $01
+	sta videoptr+1
 
 	rts
 	.)
 
 newblock
 	.(
-	lda $0a
+	lda vidblockreq
 	beq req_clear
 	; mark block-load stalled.
 	lda #1
-	sta $19
+	sta vidloadstall
 	; re-queue frame.
-	inc $18
+	inc framestodraw
 	rts
 req_clear
-	stz $19
+	stz vidloadstall
 	.)
 
-	lda $09
+	lda currentvidbuf
 	bne buftwo
 		
 	; switch to second buffer
-	stz $00
-	lda #$6C
-	sta $01
+	stz videoptr
+	lda #>VBUF2
+	sta videoptr+1
 	; request reload of first buffer (should be atomic!)
 	lda #1
 	sei
-	sta $0a
+	sta vidblockreq
 	; second buffer active.
-	sta $09
+	sta currentvidbuf
 	; buffer 1 not ready.
-	stz $0b
+	stz vidblk1rdy
 	cli
 	
 	jmp switched
 buftwo
 	; switch to first buffer
-	stz $00
-	lda #$5C
-	sta $01
+	stz videoptr
+	lda #>VBUF1
+	sta videoptr+1
 	; request reload of second buffer (likewise.)
 	lda #2
 	sei
-	sta $0a
+	sta vidblockreq
 	; first buffer active.
-	stz $09
+	stz currentvidbuf
 	; buffer 2 not ready.
-	stz $0c
+	stz vidblk2rdy
 	cli
 switched
 
@@ -694,21 +832,21 @@ switched
 	; end of render.
 	.)
 
-; Initialise $11,$10 to point to sound data (first 4K buffer, at $3c00).
-; $12 tells which block is active (0/1).
+; Initialise audioptr to point to sound data (first 4K buffer, at ABUF1).
+; currentaudbuf tells which block is active (0/1).
 initptr
 	.(
-	lda #<$3C00
-	ldx #>$3C00
-	sta $10
-	stx $11
-	stz $12
-	stz $13
+	lda #<ABUF1
+	ldx #>ABUF1
+	sta audioptr
+	stx audioptr+1
+	stz currentaudbuf
+	stz audblockreq
 	; synch counters.
-	stz $14
-	stz $15
-	stz $16
-	stz $17
+	stz samplectr
+	stz samplectr+1
+	stz samplectr+2
+	stz samplectr+3
 	rts
 	.)
 
@@ -781,6 +919,17 @@ inittimer1irq
 	rts
 	.)
 
+close_events
+	.(
+	sei
+	; just reset!
+	lda #200
+	ldx #3
+	jsr osbyte
+	jmp ($fffc)
+	rts
+	.)
+
 soundstrobe
 	.(
 	sta $fe41
@@ -788,12 +937,15 @@ soundstrobe
 	stz $fe40
 	nop
 	nop
+	nop
+	nop
 	lda #$08
 	sta $fe40
 	rts
 	.)
 
-; initialise sound frequencies on 3 channels.
+; initialise sound frequencies on 3 channels. Don't use the same frequency for
+; each! Can't control phase.
 initfreq
 	.(
 	sei
@@ -802,13 +954,13 @@ initfreq
 	sta $fe43
 	
 	; channel 3
-	lda #$83
+	lda #$81
 	jsr soundstrobe
 	lda #$00
 	jsr soundstrobe
 	
 	; channel 2
-	lda #$a3
+	lda #$a2
 	jsr soundstrobe
 	lda #$00
 	jsr soundstrobe
@@ -823,7 +975,7 @@ initfreq
 	rts
 	.)
 
-; $14,$15,$16,$17 are sample counter.
+; samplectr (4 bytes) is sample counter.
 
 exitirq
 	.(
@@ -866,12 +1018,20 @@ irqhandler
 		
 	; play sample!
 	
-	; set 'slow' databus lines to output (might not need to do this each
-	; cycle?)
-	;lda #$ff
-	;sta $fe43
-		
-	lda ($10)
+	; see if we stalled loading an audio buffer.
+	lda audloadstall
+	bne retry_audiobuf
+	
+	; if current buffer isn't ready, drop out.
+	.(
+	ldy currentaudbuf
+	lda audblk1rdy, y
+	bne bufready
+	jmp bufnotready
+bufready
+	.)
+
+	lda (audioptr)
 	
 	bpl allchannels
 	
@@ -883,19 +1043,23 @@ write_and_incr
 	stz $fe40
 	; synch counter
 	clc
-	lda $14
-	adc #<3000
-	sta $14
-	lda $15
-	adc #>3000
-	sta $15
-	lda $16
-	adc #0
-	sta $16
-	.(
-	bcc nohi
-	inc $17
-nohi	.)
+	lda samplectr
+	adc #<FPS
+	sta samplectr
+	lda samplectr+1
+	adc #>FPS
+	sta samplectr+1
+;	.(
+;	bcc nohi
+;	inc samplectr+2
+;nohi	.)
+	;lda samplectr+2
+	;adc #0
+	;sta samplectr+2
+	;.(
+	;bcc nohi
+	;inc samplectr+3
+;nohi	.)
 	
 	lda #$08
 	sta $fe40
@@ -919,43 +1083,69 @@ allchannels
 played_samp
 	; just for shits & giggles
 	;lda #0
-	;sta ($10)
+	;sta (audioptr)
 
 	; move to next sample / check for end-of-buffer.
-	inc $10
-	.(
-	bne nohi
-	lda $12
+	inc audioptr
+	bne noaudiohibyte
+	inc audioptr+1
+
+retry_audiobuf
+	lda currentaudbuf
 	bne buftwo
-	inc $11
-	lda $11
-	cmp #$4c
-	bcc nohi
-	; switch to second buffer.
+
+	lda audioptr+1
+	cmp #>ABUF1END
+	bcc noaudiohibyte
+	
+	.(
+	lda audblockreq
+	beq blockreqclear
 	lda #1
-	sta $12
-	; request reload of buffer 1.
-	sta $13
-	stz $10
-	lda #$4c
-	sta $11
-	jmp nohi
-buftwo
-	inc $11
-	lda $11
-	cmp #$5c
-	bcc nohi
-	; switch to first buffer.
-	stz $12
-	; request reload of buffer 2.
-	lda #2
-	sta $13
-	stz $10
-	lda #$3c
-	sta $11
-nohi
+	sta audloadstall
+	jmp bufnotready
+blockreqclear
+	stz audloadstall
 	.)
 	
+	; switch to second buffer.
+	lda #1
+	sta currentaudbuf
+	; request reload of buffer 1.
+	sta audblockreq
+	stz audblk1rdy
+	stz audioptr
+	lda #>ABUF2
+	sta audioptr+1
+	jmp noaudiohibyte
+
+buftwo
+	lda audioptr+1
+	cmp #>ABUF2END
+	bcc noaudiohibyte
+
+	.(
+	lda audblockreq
+	beq blockreqclear
+	lda #1
+	sta audloadstall
+	jmp bufnotready
+blockreqclear
+	stz audloadstall
+	.)
+
+	; switch to first buffer.
+	stz currentaudbuf
+	; request reload of buffer 2.
+	lda #2
+	sta audblockreq
+	stz audblk2rdy
+	stz audioptr
+	lda #>ABUF1
+	sta audioptr+1
+noaudiohibyte
+
+bufnotready
 	; handled our interrupt, don't chain to next.
 	ply
 	pla

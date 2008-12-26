@@ -18,7 +18,7 @@ squeeze (const char *filename, const char *outfile)
   unsigned int totalsize = 0;
   unsigned int rletotal = 0;
   unsigned int blockidx = 0;
-  const unsigned int blocksize = 4096;
+  const unsigned int blocksize = 7168;
   unsigned int blockno = 0;
   
   fh = fopen (filename, "r");

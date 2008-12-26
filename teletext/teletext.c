@@ -912,7 +912,7 @@ do_playback (const char *filename)
 
       SDL_UpdateRect (screen, 0, 0, screen->w, screen->h);
 
-      usleep (30);
+      usleep (41666);
 
       while (SDL_PollEvent (&ev))
         {
