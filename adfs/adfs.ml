@@ -309,5 +309,5 @@ let _ =
   let fsmap = create_fsmap sector_total disksize in
   let ochan = open_out_bin Sys.argv.(1) in
   write_output ochan layout fsmap
-    { im_sectors = disksize; im_bootopt = 4; im_diskid = diskid };
+    { im_sectors = disksize; im_bootopt = 3; im_diskid = diskid };
   close_out ochan

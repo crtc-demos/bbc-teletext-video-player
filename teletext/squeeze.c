@@ -8,6 +8,27 @@
 #include <unistd.h>
 
 void
+overlay (unsigned char *videoram, int y, char *text, int double_height)
+{
+  unsigned char *rowstart = videoram + y * 40;
+  unsigned int x, subrow, textlen = strlen (text);
+  
+  for (subrow = 0; subrow <= double_height; subrow++)
+    {
+      for (x = 0; x < 40; x++)
+	rowstart[x] = ' ';
+
+      if (double_height)
+	rowstart[0] = 141;
+      
+      for (x = 0; x < textlen; x++)
+	rowstart[x + 20 - textlen / 2] = text[x];
+      
+      rowstart += 40;
+    }
+}
+
+void
 squeeze (const char *filename, const char *outfile)
 {
   FILE *fh;
@@ -48,6 +69,23 @@ squeeze (const char *filename, const char *outfile)
 	    //printf ("%x\n", byte);
 	    videoram[y * 40 + x] = byte;
 	  }
+
+      /* Put on nice hard-wired overlays.  */
+      /*if (frame >= 10 && frame < 70)
+        overlay (videoram, 22, "NEUROTYPICAL", 1);
+      else */
+      if (frame >= 180 && frame < 240)
+        {
+          overlay (videoram, 20, "NEUROTYPICAL", 1);
+	  overlay (videoram, 22, "presents", 0);
+	}
+      else if (frame >= 350 && frame < 410)
+        {
+	  overlay (videoram, 20, "In Glorious", 0);
+	  overlay (videoram, 21, "Teletext-O-Vision (tm)", 1);
+	}
+      else if (frame >= 2340 && frame < 2385)
+	overlay (videoram, 22, "Video. Interrupts. Audio.", 1);
 
       for (pass = 0; pass < 2; pass++)
         {
@@ -252,6 +290,20 @@ squeeze (const char *filename, const char *outfile)
 
       memcpy (previous, videoram, sizeof (previous));
       frame++;
+    }
+
+  /* Hack: add a padding block at the end of the file, so we can play the last
+     (real, double-buffered) video block after fetching the dummy data.  */
+    {
+      unsigned int i;
+      
+      /* Pad to end of current block.  */
+      for (i = blockidx; i < blocksize; i++)
+        fputc ('\0', outf);
+      
+      /* And another padding block.  */
+      for (i = 0; i < blocksize; i++)
+	fputc ('\0', outf);
     }
 
   fclose (fh);

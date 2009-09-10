@@ -166,7 +166,7 @@ let deglitch oldstate newval sample =
     lo, err
 
 let sconv inbuf outbuf state =
-  let lookahead = 10 in
+  let lookahead = 20 in
   let glitch_factor = 0.5 in
   let memos = Hashtbl.create 4096 in
   let get_sample n =
@@ -277,19 +277,24 @@ let sconv inbuf outbuf state =
   done;
   !curstate
 
+let out_chunk_size = 6 * 1024
+let in_chunk_size = out_chunk_size * 2
+
 let convert_file infile outfile quant =
   let inh = open_in_bin infile
   and outh = open_out_bin outfile in
   let inlen = in_channel_length inh
-  and inbuf = String.create 8192
-  and outbuf = String.make 4096 '\000' in
+  and inbuf = String.create in_chunk_size
+  and outbuf = String.make out_chunk_size '\000' in
   let rec do_conversion bytes_remaining prev_state =
     if bytes_remaining > 0 then begin
       let bytes_to_do =
-	if bytes_remaining < 8192 then bytes_remaining else 8192 in
+	if bytes_remaining < in_chunk_size
+	  then bytes_remaining
+	  else in_chunk_size in
       really_input inh inbuf 0 bytes_to_do;
       let next_state = sconv inbuf outbuf prev_state in
-      output outh outbuf 0 4096;
+      output outh outbuf 0 out_chunk_size;
       do_conversion (bytes_remaining - bytes_to_do) next_state
     end in
   ignore (do_conversion inlen { chan1 = 0; chan2 = 0; chan3 = 0})

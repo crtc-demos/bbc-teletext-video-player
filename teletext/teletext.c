@@ -383,6 +383,20 @@ state_for_char (unsigned char schar, int oldstate)
 }
 
 int
+remove_gamma (int v)
+{
+  const float gamma = 2.2;
+  float vf = (float) v / 255.0;
+  float corrected = pow (vf, 1.0 / gamma);
+  corrected = (corrected - 0.5) * 1.15 + 0.5;
+  if (corrected > 1.0)
+    corrected = 1.0;
+  if (corrected < 0.0)
+    corrected = 0.0;
+  return (int) (corrected * 255.0);
+}
+
+int
 char_cost (int row, int col)
 {
   int cost = 0;
@@ -409,9 +423,9 @@ char_cost (int row, int col)
           sb = (spix >> 16) & 0xff;
           sg = (spix >> 8) & 0xff;
           sr = spix & 0xff;
-          ib = (ipix >> 16) & 0xff;
-          ig = (ipix >> 8) & 0xff;
-          ir = ipix & 0xff;
+          ib = remove_gamma ((ipix >> 16) & 0xff);
+          ig = remove_gamma ((ipix >> 8) & 0xff);
+          ir = remove_gamma (ipix & 0xff);
 #else
           Uint8 ir, ig, ib, sr, sg, sb;
           SDL_GetRGB (spix, screen->format, &sr, &sg, &sb);
@@ -750,6 +764,26 @@ randomize (void)
 }
 
 void
+fix_gamma (void)
+{
+  int x, y;
+  for (y = 0; y < 500; y++)
+    {
+      unsigned int *img = image->pixels;
+
+      for (x = 0; x < 480; x++)
+	{
+	  unsigned int ipix = img[x];
+	  int r, g, b;
+	  r = remove_gamma ((ipix >> 16) & 0xff);
+	  g = remove_gamma ((ipix >> 8) & 0xff);
+	  b = remove_gamma (ipix & 0xff);
+	  img[x] = (r << 16) | (g << 8) | b;
+	}
+    }
+}
+
+void
 block (int xpos, int ypos, int xsize, int ysize, int read,
        int *radj, int *gadj, int *badj)
 {
@@ -936,7 +970,7 @@ main (int argc, char *argv[])
   struct window win;
   SDL_Event ev;
   int y, arg;
-  SDL_Surface *tmp;
+  SDL_Surface *tmp = NULL;
   char *infile = NULL, *outfile = NULL, *hexfile = NULL;
   char *playback = NULL;
   int keep_running = 1;
@@ -1002,9 +1036,12 @@ main (int argc, char *argv[])
   image = tmp;
 #endif
 
-  if (!playback)  
-    diffuse ();
-    // randomize ();
+  if (!playback)
+    {
+      fix_gamma ();
+      diffuse ();
+      // randomize ();
+    }
   
   /*SDL_BlitSurface (image, NULL, screen, NULL);*/
   

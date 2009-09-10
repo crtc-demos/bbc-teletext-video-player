@@ -2,6 +2,7 @@
 #define osbyte $fff4
 #define osfind $ffce
 #define osgbpb $ffd1
+#define oscli $fff7
 
 ; 10KHz * 100 = 1000000
 ;#define HZ0 64
@@ -53,7 +54,7 @@
 ; These values (don't really) work OK for Pitchshifter, Dead Battery
 
 ; Video frames per second
-#define FPS 12
+#define FPS 15
 
 ;#define ABUF1 $1c00
 ;#define ABUF1END $2c00
@@ -127,7 +128,7 @@ vdubytes
 	.byt 23
 	.byt 0
 	.byt 10
-	.byt 0
+	.byt 32
 	.byt 0
 	.byt 0
 	.byt 0
@@ -161,7 +162,7 @@ openfile
 	.)
 
 filename
-	.asc "pitch8k", 0
+	.asc "track8k", 0
 
 gbpb_block
 gbpb_fh
@@ -279,7 +280,7 @@ openfile_v
 	.)
 
 filename_v
-	.asc "pitchsqz", 0
+	.asc "outsqz", 0
 
 gbpb_block_v
 gbpb_fh_v
@@ -372,7 +373,7 @@ chosenbuf
 
 end_of_file
 	plx
-	inc videof
+	;inc videof
 	rts
 	.)
 
@@ -404,6 +405,12 @@ pollmedia
 repeat
 	lda videof
 	beq not_end
+	
+	.(
+busy_wait
+	;jmp busy_wait
+	.)
+	
 	rts
 not_end
 	lda vidblockreq
@@ -919,13 +926,21 @@ inittimer1irq
 	rts
 	.)
 
+bye
+	.asc "KEY10 0CLS:P.'",34,"VIA by Neurotypical",34,"''",34
+	.asc "Sundown 2009",34,"''",34,"Thanks for watching!",34,"'|MRUN|M",13
+
 close_events
 	.(
 	sei
+	ldx #<bye
+	ldy #>bye
+	jsr oscli
 	; just reset!
-	lda #200
-	ldx #3
-	jsr osbyte
+	; (hard!)
+	;lda #200
+	;ldx #3
+	;jsr osbyte
 	jmp ($fffc)
 	rts
 	.)
