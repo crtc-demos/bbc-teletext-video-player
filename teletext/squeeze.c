@@ -41,6 +41,7 @@ squeeze (const char *filename, const char *outfile)
   unsigned int blockidx = 0;
   const unsigned int blocksize = 7168;
   unsigned int blockno = 0;
+  int use_blocking = 0;
   
   fh = fopen (filename, "r");
   outf = fopen (outfile, "w");
@@ -110,7 +111,7 @@ squeeze (const char *filename, const char *outfile)
 	
 	      printf ("frame size: %d bytes\n", framesize);
 	      
-	      if (blockidx + framesize >= blocksize - 1)
+	      if (use_blocking && blockidx + framesize >= blocksize - 1)
 	        {
 		  /* Frame will not fit. Start new block.  */
 		  blockno++;
@@ -294,6 +295,7 @@ squeeze (const char *filename, const char *outfile)
 
   /* Hack: add a padding block at the end of the file, so we can play the last
      (real, double-buffered) video block after fetching the dummy data.  */
+  if (use_blocking)
     {
       unsigned int i;
       
